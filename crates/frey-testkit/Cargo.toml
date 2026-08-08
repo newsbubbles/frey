@@ -1,0 +1,23 @@
+[package]
+name = "frey-testkit"
+description = "Test doubles and assertions for the Frey agent framework: a scripted model, fakes, cassettes, and assertions about what the model actually saw."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+futures-core.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+pollster = "0.4"
+
+[lints]
+workspace = true
