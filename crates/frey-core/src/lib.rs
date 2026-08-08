@@ -1,24 +1,52 @@
 //! Core domain types for the [Frey](https://github.com/newsbubbles/frey) agent framework.
 //!
-//! This crate holds the vocabulary every other Frey crate speaks: information-flow labels,
-//! capabilities, the error model, and (shortly) the conversation item model. It performs **no I/O**
-//! and takes no runtime dependency, which is what makes the planner, the policy engine, and the
-//! cache planner unit-testable as pure functions.
+//! This crate holds the vocabulary every other Frey crate speaks. It performs **no I/O** and takes
+//! no runtime dependency, which is what lets the cache planner, the budgeter, and the policy engine
+//! be pure functions with exhaustive unit tests rather than integration tests against a live API.
 //!
 //! # Where to start
 //!
-//! * [`taint`] — the label lattice. Everything from outside is [`taint::Tainted`].
-//! * [`audit`] — the trail that every security-relevant decision writes to.
-//! * [`error`] — failures typed by *audience*: what the model sees, what the operator sees, and
-//!   what a human user sees are three different things.
+//! | Module | What lives there |
+//! |---|---|
+//! | [`taint`] | The information-flow lattice. Everything from outside is [`taint::Tainted`]. |
+//! | [`audit`] | The trail every security-relevant decision writes to. |
+//! | [`error`] | Failures typed by *audience*: model, operator, and user are three different readers. |
+//! | [`ids`] | Newtype identifiers. Never random, so replay is deterministic. |
+//! | [`item`] | The conversation model — items, not messages. |
+//! | [`capability`] | What an agent may reach, and the Rule of Two. |
+//! | [`tool_def`] | How a tool is described and presented. |
+//! | [`provider_caps`] | What a provider can actually do, so degradation is explicit. |
+//! | [`segment`] | Prompt segments and cache marks. |
+//! | [`usage`] | Tokens and money, kept honest. |
+//! | [`event`] | The one event stream that feeds AG-UI, A2A, OpenTelemetry, and the journal. |
 
 pub mod audit;
+pub mod capability;
 pub mod error;
+pub mod event;
+pub mod ids;
+pub mod item;
+pub mod provider_caps;
+pub mod segment;
 pub mod taint;
+pub mod tool_def;
+pub mod usage;
 
 /// The types most callers want.
 pub mod prelude {
     pub use crate::audit::{Declassification, Endorsement};
-    pub use crate::error::{ModelMessage, RetryDirective, ToolError, ToolErrorKind, ToolOutcome};
+    pub use crate::capability::{
+        Capability, Grant, GrantSet, HostPattern, PathScope, ProgramScope,
+    };
+    pub use crate::error::{
+        InputRequest, ModelMessage, NeedsInput, RetryDirective, Risk, ToolError, ToolErrorKind,
+        ToolOutcome,
+    };
+    pub use crate::event::{Event, EventKind, Warning};
+    pub use crate::ids::{AgentPath, CallId, ModelId, ProviderId, RunId, SessionId, ToolName};
+    pub use crate::item::{Item, Role, Turn};
+    pub use crate::provider_caps::ProviderCapabilities;
     pub use crate::taint::{Tainted, Trusted, Untrusted, Validated};
+    pub use crate::tool_def::{JsonSchema, ToolDefinition};
+    pub use crate::usage::{Money, Usage};
 }

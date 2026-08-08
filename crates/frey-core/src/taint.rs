@@ -161,7 +161,7 @@ impl Join<Secret> for Secret {
 /// Where a value came from, and what it passed through. The *type* carries the lattice position;
 /// `Provenance` carries the story, so that a policy violation can name the file, tool, or peer that
 /// introduced the offending data.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Provenance {
     /// The immediate source, e.g. `tool:http_get` or `mcp:github/list_issues`.
     pub origin: SmolStr,

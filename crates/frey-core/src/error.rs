@@ -62,7 +62,7 @@ impl fmt::Display for ModelMessage {
 }
 
 /// What the operator is told. Never enters the context window.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
     /// Free-form detail: a stack trace, an upstream body, a hostname.
     pub detail: String,
@@ -85,14 +85,15 @@ impl Diagnostic {
 }
 
 /// What a human user is shown, when there is a UI and the failure is worth surfacing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Presentation {
     /// A short, non-technical sentence.
     pub message: String,
 }
 
 /// The shape of a failure. Determines default retry behaviour and how loudly it is reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ToolErrorKind {
     /// The arguments did not match the schema.
@@ -129,7 +130,8 @@ impl ToolErrorKind {
 }
 
 /// How the runtime should treat a retry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RetryDirective {
     /// Do not retry.
@@ -148,7 +150,7 @@ pub enum RetryDirective {
     RequiresInput,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Inner {
     kind: ToolErrorKind,
     model: ModelMessage,
@@ -162,7 +164,8 @@ struct Inner {
 /// The payload is boxed: failures are the cold path, and `Result<T, ToolError>` is returned by
 /// every tool in the framework, so the success path should not carry the weight of four strings
 /// and two vectors it will never use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct ToolError(Box<Inner>);
 
 impl ToolError {
@@ -318,7 +321,7 @@ impl<T> ToolOutcome<T> {
 ///
 /// One type, four projections: MCP's `input_required`, A2A's `INPUT_REQUIRED`/`AUTH_REQUIRED`,
 /// AG-UI's interrupt, and a local approval prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NeedsInput {
     /// Opaque, sealed token that lets the run resume exactly where it stopped.
     pub token: SmolStr,
@@ -327,7 +330,8 @@ pub struct NeedsInput {
 }
 
 /// One thing the run needs before it can continue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum InputRequest {
     /// A human must approve a specific action. `literal` is the exact command, URL, or statement —
@@ -366,7 +370,10 @@ pub enum InputRequest {
 
 /// How dangerous an action is. Derived from a tool's declared capabilities and cost hint, never
 /// from the model's own assessment of what it is about to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Risk {
     /// Read-only, reversible, cheap.
     Low,
