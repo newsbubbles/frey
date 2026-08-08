@@ -71,8 +71,20 @@ AFIT is stable but not `dyn`-compatible. `async-trait` boxes *every* call. `dyno
 where erasure is needed. We erase at coarse boundaries (provider registry, tool registry, plugins)
 and keep the per-token streaming path statically dispatched.
 
+**Amended 2026-08-09 after implementing M2.** `dynosaur` works, but its default `dyn(box)` erasure
+produces a plain `Box<dyn Future>`, **not** `Box<dyn Future + Send>`. Calling an erased provider
+therefore yields a non-`Send` future, and `tokio::spawn` rejects it — which would have surfaced at
+M15 (spawning sub-agents), a long way from the cause.
+
+Fix: declare trait methods as `fn f(..) -> impl Future<Output = ..> + Send` rather than `async fn`.
+Impls may still be written with `async fn`. Three benefits beyond the bug: the `Send` requirement
+becomes part of the public API instead of an implicit assumption, `clippy::async_fn_in_trait`
+becomes unnecessary rather than suppressed, and the constraint is stated where an implementer will
+read it. `provider::tests::erased_provider_futures_are_send` asserts the property directly, so a
+future `dynosaur` change cannot silently take it away.
+
 *Wrong if:* `dynosaur` proves immature for our trait shapes — fallback is hand-written
-`Pin<Box<dyn Future>>` erasure wrappers, which is what `dynosaur` generates anyway.
+`Pin<Box<dyn Future + Send>>` erasure wrappers, which is what `dynosaur` generates anyway.
 
 ## ADR-0007 — Context engine is a first-class crate, and the cache planner is a pure function — **Accepted**
 
@@ -206,6 +218,19 @@ HTTP, event-sourced state diffs, frontend tool calls, interrupts; adopted by AWS
 AgentCore and Microsoft Agent Framework). Building the internal bus in its shape means the
 harness gets a frontend protocol with no adapter, and backpressure has an obvious rule:
 **drop presentation deltas, never semantic events.**
+
+## ADR-0019 — Contracts live in `frey-core` — **Accepted** *(2026-08-08)*
+
+`frey-core` holds the traits as well as the types, in the style of `http` or `tower-service`:
+types plus trait definitions, no implementations, no I/O.
+
+The alternative — traits beside their implementations in `frey-providers` — means `frey-testkit`
+must depend on `reqwest`, `rustls`, and every provider's wire format in order to define a fake with
+three fields, and `frey-agent` must do the same to drive a loop. Both would then rebuild whenever a
+provider adapter changed.
+
+*Costs:* `frey-core` gains `futures-core` and `dynosaur`. Both are small and neither pulls in a
+runtime, so the crate still compiles without tokio and its pure functions stay trivially testable.
 
 ## ADR-0016 — Licence: **MIT OR Apache-2.0** dual — **Accepted**
 
