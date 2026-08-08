@@ -1,0 +1,21 @@
+[package]
+name = "frey-core"
+description = "Core domain types for the Frey agent framework: items, taint labels, capabilities, and errors. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+smol_str.workspace = true
+
+[dev-dependencies]
+trybuild = "1"
+
+[lints]
+workspace = true
