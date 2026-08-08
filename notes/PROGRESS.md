@@ -12,8 +12,8 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M5 providers | ✅ done | SSE keepalives, 402 fatal, encrypted reasoning replay |
 | M6 macros | ✅ done | parameter doc comments become schema descriptions |
 | M7 tool tower | ✅ done | policy, approval, redaction, truncation, registry |
-| M8 agent loop | ⏳ in progress | |
-| M9 MCP | ⬜ | |
+| M8 agent loop | ✅ done | first end-to-end agent; journal, replay, ledger |
+| M9 MCP | ⏳ in progress | |
 | M10 discovery | ⬜ | |
 | M11 sandbox | ⬜ | |
 | M12 built-in tools | ⬜ | |
@@ -87,3 +87,29 @@ The registry uses a `BTreeMap` rather than a `HashMap` on purpose: the tool bloc
 prefix, so iteration order must not depend on insertion order or a per-process hash seed. A name
 collision is an error at registration naming both sources, rather than one tool silently shadowing
 another depending on load order.
+
+## M8 — the agent loop
+
+🎯 **First end-to-end agent.** Model, tools, context plan, cost ledger, journal.
+
+Each turn is the same five steps and the order is not negotiable: segment the prompt, fit it to the
+budget, plan the cache against what survived, call the provider, then run whatever tools it asked
+for through the layers. The cache plan has to see the final segment list, and the layers have to see
+a call before anything executes.
+
+The journal records only what is non-deterministic — model responses, tool results, supplied input.
+Prompt assembly, budgeting and cache planning are pure functions of those, so recording their output
+would let a real change hide behind a stale recording.
+
+Replay diverges loudly at the exact step, naming what was recorded and what the run produced. A
+replay that quietly adapts is worse than none, because it produces confident results about a run
+that never happened.
+
+Everything that could degrade quietly instead produces something the caller can see: eviction, cache
+churn, truncation (with the withheld byte count, and a note telling the model how to get the rest), a
+missing capability, an output cap, and a fatal provider failure that ends the run rather than
+retrying into silence.
+
+One documented limit: the replay fingerprint compares request *shape* — model, turn count, tool
+names — not full prompt text. A journal storing every prompt verbatim would be enormous. The test
+that pins this also documents what it therefore cannot catch.
