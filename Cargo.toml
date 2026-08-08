@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/frey-context", "crates/frey-core", "crates/frey-testkit"]
+members = ["crates/frey-context", "crates/frey-core", "crates/frey-providers", "crates/frey-testkit"]
 
 [workspace.package]
 version = "0.0.0"

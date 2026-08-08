@@ -1,0 +1,33 @@
+[package]
+name = "frey-providers"
+description = "Provider adapters for the Frey agent framework: Anthropic, OpenAI Responses, OpenRouter, and config-defined dialects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+futures-core.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+bytes = { version = "1", optional = true }
+
+[features]
+default = ["http"]
+# The real HTTP transport. Turning it off leaves the wire mapping, which is what the tests exercise.
+http = ["dep:reqwest", "dep:tokio", "dep:bytes"]
+
+[dev-dependencies]
+pollster = "0.4"
+frey-testkit = { path = "../frey-testkit" }
+
+[lints]
+workspace = true
