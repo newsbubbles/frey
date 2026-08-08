@@ -10,9 +10,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M3 frey-testkit | ✅ done | landed before the first provider, per plan |
 | M4 cache planner | ✅ done | two bugs found by property tests |
 | M5 providers | ✅ done | SSE keepalives, 402 fatal, encrypted reasoning replay |
-| M6 macros | ⏳ in progress | |
-| M7 tool tower | ⬜ | |
-| M8 agent loop | ⬜ | |
+| M6 macros | ✅ done | parameter doc comments become schema descriptions |
+| M7 tool tower | ✅ done | policy, approval, redaction, truncation, registry |
+| M8 agent loop | ⏳ in progress | |
 | M9 MCP | ⬜ | |
 | M10 discovery | ⬜ | |
 | M11 sandbox | ⬜ | |
@@ -64,3 +64,26 @@ Four things the tests pin down, each a way to lose money or correctness quietly:
 
 `OpenAiChat` deliberately has no `Default`: an endpoint with an empty provider id would produce
 ledger entries and audit records naming nothing.
+
+## M6–M7 — macros and the tool layers
+
+`#[frey::tool]` turns a plainly-written async function into a tool. The design decision worth
+recording is that **parameter doc comments become schema descriptions**, because tool search matches
+on argument names and descriptions — so an undocumented parameter is lost search surface, and a tool
+becomes measurably harder to find once the catalog outgrows the context window. Writing the doc
+comment and making the tool discoverable are the same act, which is the only way that habit survives
+a deadline. A tool with no description at all fails to compile, with an error that says why.
+
+The layers enforce three things the provider will not:
+
+- **Caller policy.** Anthropic document `allowed_callers` as guidance to the model, not a boundary.
+  Enforcing it here is what turns a "code-only" marking from decoration into a rule.
+- **Approval prompts show the literal action**, never a natural-language summary — a summary is
+  exactly where an injected instruction hides from the person approving it.
+- **Risk comes from the declaration.** A tool's own account of how dangerous it is, or the model's,
+  is not evidence.
+
+The registry uses a `BTreeMap` rather than a `HashMap` on purpose: the tool block is the stable cache
+prefix, so iteration order must not depend on insertion order or a per-process hash seed. A name
+collision is an error at registration naming both sources, rather than one tool silently shadowing
+another depending on load order.

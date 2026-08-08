@@ -1,0 +1,24 @@
+[package]
+name = "frey-tools"
+description = "Tool plumbing for the Frey agent framework: the policy, approval, retry, redaction, and audit layers every tool call passes through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+frey-macros = { path = "../frey-macros", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+schemars = "1"
+
+[dev-dependencies]
+pollster = "0.4"
+
+[lints]
+workspace = true
