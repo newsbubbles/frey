@@ -1,0 +1,22 @@
+[package]
+name = "frey-context"
+description = "The Frey context engine: token budgeting and provider-aware prompt cache planning."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+blake3 = { version = "1", default-features = false, features = ["std"] }
+smol_str.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
