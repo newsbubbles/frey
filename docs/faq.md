@@ -63,7 +63,11 @@ silent so a UI can say "plus N unmetered calls".
 Honestly, from [the README](../README.md#honest-limitations) and
 [`notes/dogfood/`](../notes/dogfood/):
 
-- Code mode has no embedded JavaScript engine in the default build.
+- **Code mode only works by delegation.** There is no embedded JavaScript engine, and you cannot
+  supply a small executor instead: [abacus](https://github.com/newsbubbles/abacus) showed that a
+  model handed a typed API writes that language, and handed a restricted grammar invents the
+  collection helpers it expects to exist. `Strategy::Local` has nothing behind it and will until an
+  engine is embedded.
 - The `AgentCli` delegation path has never been run against a live vendor binary.
 - Landlock's ABI level is not detected by syscall; `doctor` reports the conservative answer.
 - `ToolHost::definitions` is sync and infallible, so an adapter from `Toolset` swallows a listing
@@ -82,5 +86,5 @@ Not directly. Build an MCP server with it and call that from anything — which 
 ## How do I report something?
 
 [Issues](https://github.com/newsbubbles/frey/issues). Findings that say what was awkward are more
-useful than feature requests; the two demo projects each carry a `FINDINGS.md` in that spirit and
-both changed the framework.
+useful than feature requests; the three demo projects each carry a `FINDINGS.md` in that spirit and
+all three changed the framework or its documentation.

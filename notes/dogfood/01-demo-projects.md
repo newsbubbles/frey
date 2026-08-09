@@ -6,6 +6,7 @@ found *behaviour* bugs, and the projects found *shape* problems.
 
 - **[thicket](https://github.com/newsbubbles/thicket)** — graph-shaped agent memory over MCP.
 - **[switchboard](https://github.com/newsbubbles/switchboard)** — a hosted, stateless MCP server.
+- **[abacus](https://github.com/newsbubbles/abacus)** — tool calling measured against code mode.
 
 Each repo carries its own `FINDINGS.md` written from the user's side. This file is the framework's
 side: what to do about them.
@@ -131,6 +132,53 @@ Recorded because a findings file that lists only complaints is not an honest acc
   independently constructed replicas passed with no change to Frey.
 - **Argument validation caught a bug in thicket** the day it was added — `remember` with no
   arguments had been filing an empty memory.
+- **`Caller::Code { runner }` was exactly right.** abacus marks script-issued calls with it in one
+  line, which is what lets the tool layer enforce caller policy client-side rather than trusting the
+  provider's advisory `allowed_callers`.
+- **`generate_api` produces genuinely good TypeScript** — good enough that the model concludes it
+  may write TypeScript, which is a compliment the feature cannot use.
+
+---
+
+## D7 — `Strategy::Local` cannot be fulfilled by a user, and the docs imply it can
+
+Found by abacus, and it is the most consequential thing in this file because it changes a claim
+rather than fixing a defect.
+
+Code mode's missing engine is documented as a cost-benefit call: delegation is correct for
+Anthropic, and a JS runtime in every build is a cost most users would pay for nothing. True, and it
+reads as *"supply your own executor if you need local execution"*. abacus tried.
+
+**Models will not write a restricted mini-language.** Two presentations of the same three-form
+language, both refused:
+
+| Presentation | What the model wrote |
+|---|---|
+| Frey's `generate_api` TypeScript declarations | `let eu_orders = []`, `orders[0]`, `region === "eu"`, a ternary |
+| The same tools as example calls in the target syntax | `filter(orders, …)`, `first(open_orders)` — functions that do not exist |
+
+The second refusal is the informative one. The prompt showed only the legal forms and said in
+capitals that there are no loops, no `if`, and no arithmetic; the model invented collection helpers
+anyway, because a language with a list in it ought to have them. Two presentations isolates the
+variable: this is not a prompting problem that a better prompt fixes.
+
+So the honest conclusion is stronger than the recorded one. Delegation and a real embedded engine
+are the only two options; "bring your own small executor" is not a third. The decision to defer the
+engine stays correct — the documentation was leaving a door open that is not there.
+
+**Done:** the README, the FAQ, and the caching doc now say delegation is the only working path.
+**Still to do:** `Strategy::Local` should carry that in its own doc comment, or be removed until an
+engine exists.
+
+### A related framing problem
+
+abacus also measured where the saving is. On twelve tools the typed API is 554 tokens against the
+tool block's 700 — 21%, on the part of the prompt that is cached anyway. Over the same task, **15
+tool results** crossed the context window across 5 round trips.
+
+Frey's docs described code mode as a presentation of the catalog, which is what the code does and
+the less important half. It is *for* keeping intermediate results out of the window. Now fixed in
+`docs/context-and-caching.md`.
 
 ---
 
@@ -140,5 +188,7 @@ Recorded because a findings file that lists only complaints is not an honest acc
    making before 0.2, and the only item here that can lose information at runtime.
 2. **The general lesson under D2** — one shared dispatch path, so a new surface cannot skip the
    checks. Nothing currently prevents the next one from repeating D2 exactly.
-3. **D4 and D5** — small, additive, no reason to wait.
-4. **D6** — documentation.
+3. **D7** — `Strategy::Local` should state that a local executor means a real engine, or go away.
+   Currently the type promises something no user can build.
+4. **D4 and D5** — small, additive, no reason to wait.
+5. **D6** — documentation.

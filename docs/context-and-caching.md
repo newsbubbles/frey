@@ -117,7 +117,15 @@ budget, and a search index:
 - **Skills** — an index rung stays small next to a body of the size the format recommends. Twenty
   skills do not cost twenty bodies at startup.
 - **Code mode** — a typed API surface instead of a tool block. The surface is generated even when
-  code mode is off, because it doubles as the corpus tool search indexes.
+  code mode is off, because it doubles as the corpus tool search indexes. **It only works by
+  delegating to a provider that runs real code**; see the note in
+  [the FAQ](faq.md#what-is-actually-missing).
+
+  Worth knowing where the saving actually is. Measured on twelve tools, the typed API is 554 tokens
+  against the tool block's 700 — a 21% saving on *definitions*, which are the cached part of the
+  prompt anyway. Over the same task, **15 tool results** crossed the context window across 5 round
+  trips. The results are the uncached, per-turn, latency-bearing part, and they are what code mode
+  is for.
 
 ## Prior art
 

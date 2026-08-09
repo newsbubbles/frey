@@ -26,12 +26,14 @@ Start here.
 
 ## Worked examples
 
-Two complete projects, each with a `FINDINGS.md` about what was awkward:
+Three complete projects, each with a `FINDINGS.md` about what was awkward:
 
 - **[thicket](https://github.com/newsbubbles/thicket)** — graph-shaped agent memory over MCP. Read
   this for tools and the agent loop.
 - **[switchboard](https://github.com/newsbubbles/switchboard)** — a hosted, stateless MCP server
   with approval gates. Read this for the protocol.
+- **[abacus](https://github.com/newsbubbles/abacus)** — tool calling measured against code mode.
+  Read this for the result that changed what the docs say about code mode.
 
 And two runnable in-repo examples that need no API key:
 

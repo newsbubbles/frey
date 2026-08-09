@@ -15,17 +15,19 @@ quietly.
 
 ## Built with it
 
-Two demonstration projects, written to find out what using Frey is actually like rather than to
-advertise it. Between them they found **two real bugs** in the framework — both in the MCP server,
-both fixed the same day — plus a handful of rough edges that are not fixed. Each carries a
-`FINDINGS.md` saying so, including the parts that are still awkward.
+Three demonstration projects, written to find out what using Frey is actually like rather than to
+advertise it. Between them they found **two real bugs** — both in the MCP server, both fixed the
+same day — a handful of rough edges that are not fixed, and one result that changed what this README
+says about code mode. Each carries a `FINDINGS.md`, including the parts that are still awkward.
 
 | Project | What it is |
 |---|---|
 | **[thicket](https://github.com/newsbubbles/thicket)** | Graph-shaped agent memory, served over MCP. One `Toolset`, exposed both as an MCP server and to an in-process agent. |
 | **[switchboard](https://github.com/newsbubbles/switchboard)** | A hosted, stateless MCP server on HTTP, with approval gates. Round-robins an approval handshake across two replicas to prove statelessness. |
+| **[abacus](https://github.com/newsbubbles/abacus)** | Measures tool calling against code mode, and finds that models will not write a restricted mini-language. |
 
-Start with thicket if you want to see tools and an agent loop; switchboard if you want the protocol.
+Start with thicket for tools and the agent loop, switchboard for the protocol, abacus for the
+uncomfortable result.
 
 ---
 
@@ -186,10 +188,13 @@ challenge, and a frontend-executed tool are one code path.
   install, so the end-to-end path is unverified. Treat it as untested until you have tested it.
 - **Only Claude Code has a delegation adapter.** The `AgentProvider` trait is general; Codex and
   the rest are not implemented.
-- **Code mode is partial.** The typed API generator, the capability bindings, and delegation to a
-  provider that can run the script all work. An embedded JavaScript engine is not in the default
-  build — for Anthropic the correct implementation is delegation, and pulling a JS runtime into
-  every build of a Rust framework is a cost most users would pay for nothing.
+- **Code mode requires delegation.** The typed API generator, the capability bindings, and
+  delegation to a provider that can run the script all work. There is no embedded JavaScript engine,
+  and [abacus](https://github.com/newsbubbles/abacus) established that this is more limiting than
+  originally stated: a model handed a typed API writes *that language*, and handed a bespoke
+  restricted grammar it invents the `filter` and `first` such a language ought to have. So you
+  cannot substitute a small executor of your own. `Strategy::Local` therefore has nothing behind it
+  and will keep having nothing until an engine is embedded — delegation is the only working path.
 - **The sandbox reports what it can enforce, and it is often less than you want.** Landlock needs a
   6.12 kernel *and* `landlock` in the `lsm=` boot parameter; RHEL 9 has neither. Frey tells you
   precisely what is missing and refuses to run rather than pretending.
