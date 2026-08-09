@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use crate::streaming::async_stream;
+
 use frey_core::ids::{ModelId, ProviderId};
 use frey_core::item::Item;
 use frey_core::provider::{
@@ -319,60 +321,6 @@ fn stream_events(value: &serde_json::Value, dialect: &Arc<dyn Dialect>) -> Vec<S
     }
 
     out
-}
-
-// A minimal `async_stream!` replacement, so the crate does not take a macro dependency for one use.
-mod yielder {
-    use futures_core::Stream;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    pub struct Yielder<T> {
-        pub(super) items: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<T>>>,
-    }
-
-    impl<T> Yielder<T> {
-        pub async fn send(&mut self, item: T) {
-            self.items.lock().expect("yielder poisoned").push_back(item);
-        }
-    }
-
-    pub struct Collected<T> {
-        pub(super) items: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<T>>>,
-        pub(super) future: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    }
-
-    impl<T: Unpin> Stream for Collected<T> {
-        type Item = T;
-
-        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-            if let Some(item) = self.items.lock().expect("yielder poisoned").pop_front() {
-                return Poll::Ready(Some(item));
-            }
-            let Some(future) = self.future.as_mut() else { return Poll::Ready(None) };
-            match future.as_mut().poll(cx) {
-                Poll::Ready(()) => {
-                    self.future = None;
-                    Poll::Ready(self.items.lock().expect("yielder poisoned").pop_front())
-                }
-                Poll::Pending => match self.items.lock().expect("yielder poisoned").pop_front() {
-                    Some(item) => Poll::Ready(Some(item)),
-                    None => Poll::Pending,
-                },
-            }
-        }
-    }
-}
-
-fn async_stream<T, F, Fut>(f: F) -> yielder::Collected<T>
-where
-    T: Unpin + Send + 'static,
-    F: FnOnce(yielder::Yielder<T>) -> Fut,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    let items = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let future = f(yielder::Yielder { items: std::sync::Arc::clone(&items) });
-    yielder::Collected { items, future: Some(Box::pin(future)) }
 }
 
 #[cfg(test)]

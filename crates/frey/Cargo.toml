@@ -26,6 +26,8 @@ frey-harness = { path = "../frey-harness", version = "0.1.1", optional = true }
 default = ["http", "mcp", "sandbox", "harness"]
 # Real HTTP providers. Off, the wire mapping remains and can be tested without a network.
 http = ["frey-providers/http"]
+# Delegate to a vendor agent CLI (Claude Code) so a user rides their own subscription.
+agent-cli = ["frey-providers/agent-cli"]
 # Model Context Protocol client.
 mcp = ["dep:frey-mcp"]
 # Cross-platform process confinement.
@@ -35,7 +37,7 @@ a2a = ["dep:frey-a2a"]
 # Sessions, approvals, AG-UI, and `doctor`.
 harness = ["dep:frey-harness"]
 # Everything.
-full = ["http", "mcp", "sandbox", "a2a", "harness"]
+full = ["http", "mcp", "sandbox", "a2a", "harness", "agent-cli"]
 
 [dev-dependencies]
 frey-testkit = { path = "../frey-testkit", version = "0.1.1" }

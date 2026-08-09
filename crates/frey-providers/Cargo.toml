@@ -24,9 +24,12 @@ bytes = { version = "1", optional = true }
 default = ["http"]
 # The real HTTP transport. Turning it off leaves the wire mapping, which is what the tests exercise.
 http = ["dep:reqwest", "dep:tokio", "dep:bytes"]
+# Delegating to a vendor agent CLI. No HTTP client: the credential stays with their binary.
+agent-cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/rt"]
 
 [dev-dependencies]
 pollster = "0.4"
+tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "time"] }
 frey-testkit = { path = "../frey-testkit", version = "0.1.1" }
 
 [lints]

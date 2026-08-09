@@ -104,12 +104,15 @@ pub mod prelude {
     pub use frey_context::skills::{Skill, SkillIndexEntry, parse_skill};
 
     // Providers.
-    #[cfg(feature = "http")]
-    pub use frey_providers::HttpProvider;
+    /// Ride an existing subscription by delegating to the vendor's own binary.
+    #[cfg(feature = "agent-cli")]
+    pub use frey_providers::agent_cli::{AgentCli, Flavour};
     pub use frey_providers::anthropic::Anthropic;
     pub use frey_providers::dialect::{Auth, Dialect, DialectKind, ProviderConfig};
     pub use frey_providers::openai::OpenAiResponses;
     pub use frey_providers::openrouter::{OpenAiChat, OpenRouter};
+    #[cfg(feature = "http")]
+    pub use frey_providers::{HttpProvider, Timeouts};
 
     // Tools.
     pub use frey_tools::layer::{PolicyLayer, RedactLayer, TruncateLayer, risk_of};

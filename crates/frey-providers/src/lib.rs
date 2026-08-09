@@ -20,16 +20,19 @@
 //! assert_eq!(haiku.cache.min_prefix_tokens(), Some(4_096));
 //! ```
 
+#[cfg(feature = "agent-cli")]
+pub mod agent_cli;
 pub mod anthropic;
 pub mod dialect;
 pub mod openai;
 pub mod openrouter;
 pub mod sse;
+pub(crate) mod streaming;
 
 #[cfg(feature = "http")]
 mod http;
 #[cfg(feature = "http")]
-pub use http::HttpProvider;
+pub use http::{HttpProvider, Timeouts};
 
 /// Build a dialect from a configuration entry, so a provider can be added without writing Rust.
 ///
@@ -53,12 +56,12 @@ pub fn dialect_from_config(
 
 /// The types most callers want.
 pub mod prelude {
-    #[cfg(feature = "http")]
-    pub use crate::HttpProvider;
     pub use crate::anthropic::Anthropic;
     pub use crate::dialect::{Auth, Dialect, DialectKind, ProviderConfig};
     pub use crate::openai::OpenAiResponses;
     pub use crate::openrouter::{OpenAiChat, OpenRouter};
+    #[cfg(feature = "http")]
+    pub use crate::{HttpProvider, Timeouts};
 }
 
 #[cfg(test)]
