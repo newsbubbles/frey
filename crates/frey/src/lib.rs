@@ -126,6 +126,9 @@ pub mod prelude {
 
     #[cfg(feature = "mcp")]
     pub use frey_mcp::client::{Catalog, CatalogCache, McpClient, McpError, Transport};
+    /// Being an MCP server, rather than calling one.
+    #[cfg(feature = "mcp")]
+    pub use frey_mcp::server::{Server as McpServer, ServerInfo as McpServerInfo};
 
     #[cfg(feature = "sandbox")]
     pub use frey_core::sandbox::{ExecSpec, SandboxError, SandboxPolicy, SandboxReport};

@@ -11,11 +11,15 @@
 
 pub mod client;
 pub mod protocol;
+pub mod server;
 
 /// The types most callers want.
 pub mod prelude {
     pub use crate::client::{
         Catalog, CatalogCache, McpClient, McpError, Transport, TransportError,
     };
-    pub use crate::protocol::{ClientInfo, PROTOCOL_VERSION, Request, ServerIdentity};
+    pub use crate::protocol::{
+        CacheScope, ClientInfo, McpTool, PROTOCOL_VERSION, Request, ServerIdentity,
+    };
+    pub use crate::server::{Server, ServerInfo};
 }
