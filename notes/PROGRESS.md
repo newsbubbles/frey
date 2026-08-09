@@ -15,9 +15,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M8 agent loop | ✅ done | first end-to-end agent; journal, replay, ledger |
 | M9 MCP | ✅ done | stateless client, legacy shim, defensive re-sort |
 | M10 discovery | ✅ done | regex mirroring provider semantics, BM25 |
-| M11 sandbox | ⏳ in progress | |
-| M12 built-in tools | ⬜ | |
-| M13 skills | ⬜ | |
+| M11 sandbox | ✅ done | fail-closed; runtime probing; found a real scope bug |
+| M12 built-in tools | ✅ done | argv-only shell, egress allowlist, workspace paths |
+| M13 skills | ⏳ in progress | |
 | M14 code mode | ⬜ | |
 | M15 multi-agent | ⬜ | |
 | M16 A2A | ⬜ | |
@@ -141,3 +141,30 @@ strategies index the same four fields the provider does: name, description, argu
 argument descriptions. The BM25 test that finds `db_query` from "postgres dialect" only passes
 because that tool's parameter is documented — which is the concrete reason an undocumented parameter
 is a defect rather than a style preference.
+
+## M11–M12 — security
+
+A real security bug surfaced here, from a test rather than a review. `PathScope::new(["./"])`
+normalised to `"/"`, so a policy that read as *the workspace* actually granted the entire
+filesystem. Nothing looked wrong — which is what makes it the worst kind of bug, and why the fix
+carries a permanent regression test rather than a comment.
+
+Two modelling clarifications also came out of building it:
+
+- **`ProgramAllowlist` is enforced by Frey, not by the kernel.** It belongs in the baseline every
+  platform reports, because it is enforced by refusing to spawn. It is also the control that matters
+  most: a program that never starts cannot escape anything.
+- **Partial confinement is reported precisely.** Landlock ABI 1 scopes the filesystem but not ports.
+  Reporting that as "unavailable" would push an operator toward disabling confinement entirely, so
+  the refusal names exactly which control is missing.
+
+The probing logic is a pure function of a detected ABI level and an `lsm=` flag, so the *degraded*
+paths — which a healthy CI machine cannot reproduce by running — are ordinary unit tests on every
+platform. The subtlest case has its own test: a kernel with Landlock compiled in but not enabled at
+boot enforces nothing, and the message says exactly which boot parameter to change.
+
+The built-in tool validators demonstrate the shape rather than just providing utility. `sh -c
+"r''m -rf /"` fails on `sh`, before the payload is ever considered, because the program is compared
+as a whole argv element and there is no command string to obfuscate. `https://api.github.com@evil.test/`
+is refused because it reads as GitHub and resolves elsewhere. An environment variable that looks
+like a credential is refused outright, since a sandbox never holds a secret.

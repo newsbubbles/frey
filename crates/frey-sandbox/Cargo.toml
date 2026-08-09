@@ -1,0 +1,21 @@
+[package]
+name = "frey-sandbox"
+description = "Cross-platform process confinement for Frey. Fails closed, and reports what it actually enforced."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+serde.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pollster = "0.4"
+
+[lints]
+workspace = true

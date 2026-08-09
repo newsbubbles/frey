@@ -300,6 +300,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frey-sandbox"
+version = "0.0.0"
+dependencies = [
+ "frey-core",
+ "pollster",
+ "serde",
+ "smol_str",
+ "thiserror",
+]
+
+[[package]]
 name = "frey-testkit"
 version = "0.0.0"
 dependencies = [

@@ -106,14 +106,28 @@ impl PathScope {
     }
 }
 
+/// Normalise a path for lexical comparison.
+///
+/// The subtlety that matters: `"./"` means *the workspace root*, not the filesystem root. An earlier
+/// version collapsed both to `"/"`, which silently turned a workspace-scoped policy into an
+/// unrestricted one — a scope that appears to confine and does not, which is the worst kind of
+/// security bug because nothing looks wrong. `"."` is therefore its own marker, and
+/// [`covers_lexically`] refuses to let it match an absolute path.
 fn normalise(path: &str) -> SmolStr {
     let replaced = path.replace('\\', "/");
-    let trimmed = replaced.strip_prefix("./").unwrap_or(&replaced);
-    let trimmed = trimmed.trim_end_matches('/');
-    if trimmed.is_empty() { SmolStr::new("/") } else { SmolStr::new(trimmed) }
+    if replaced == "/" {
+        return SmolStr::new("/");
+    }
+    let relative = replaced.strip_prefix("./").unwrap_or(&replaced);
+    let trimmed = relative.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." { SmolStr::new(".") } else { SmolStr::new(trimmed) }
 }
 
 fn covers_lexically(prefix: &str, path: &str) -> bool {
+    // The workspace root covers every *relative* path and no absolute one.
+    if prefix == "." {
+        return !path.starts_with('/');
+    }
     if prefix == "/" || prefix == path {
         return true;
     }
@@ -543,6 +557,20 @@ mod tests {
             "prefix matching must respect component boundaries"
         );
         assert!(!s.covers("other/src/main.rs"));
+    }
+
+    #[test]
+    fn the_workspace_root_does_not_silently_mean_the_filesystem_root() {
+        // Regression. An earlier `normalise` collapsed "./" to "/", so a policy that read as
+        // "the workspace" actually granted the entire filesystem. Nothing looked wrong, which is
+        // what made it worth a permanent test rather than a fix and a shrug.
+        let workspace = scope(&["./"]);
+        assert!(workspace.covers("src/main.rs"));
+        assert!(workspace.covers("out"));
+        assert!(!workspace.covers("/etc/passwd"), "the workspace is not the filesystem");
+
+        // An explicit filesystem root still means what it says, for the cases that want it.
+        assert!(scope(&["/"]).covers("/etc/passwd"));
     }
 
     #[test]

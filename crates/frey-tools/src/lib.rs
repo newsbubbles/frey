@@ -17,6 +17,7 @@
 //! assert_eq!(risk_of(&def), frey_core::error::Risk::Low);
 //! ```
 
+pub mod builtin;
 pub mod layer;
 pub mod registry;
 
@@ -156,6 +157,7 @@ pub mod __private {
 
 /// The types most callers want.
 pub mod prelude {
+    pub use crate::builtin::{AllowedProgram, InWorkspace, OnEgressAllowlist, ParsedJson};
     pub use crate::layer::{
         ApprovalLayer, ApprovalPolicy, PolicyLayer, RedactLayer, ToolService, TruncateLayer,
         risk_of,
