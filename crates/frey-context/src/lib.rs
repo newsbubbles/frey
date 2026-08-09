@@ -36,14 +36,18 @@
 
 pub mod budget;
 pub mod cache;
+pub mod codemode;
 pub mod hash;
 pub mod profiles;
 pub mod search;
+pub mod skills;
 
 /// The types most callers want.
 pub mod prelude {
     pub use crate::budget::{Budgeter, ContextBudget, Floors};
     pub use crate::cache::{CachePlan, CachePlanner, PreviousPrompt};
+    pub use crate::codemode::{Strategy, generate_api};
     pub use crate::hash::{hash_parts, hash_text};
     pub use crate::search::{Bm25Search, RegexSearch};
+    pub use crate::skills::{Skill, SkillIndexEntry, parse_skill};
 }

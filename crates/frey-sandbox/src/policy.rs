@@ -121,8 +121,8 @@ pub fn allow_degraded(configured: bool) -> bool {
 mod tests {
     use super::*;
     use crate::probe::{LandlockAbi, linux_availability};
-    use frey_core::sandbox::Control;
     use frey_core::capability::{HostPattern, PathScope, ProgramScope};
+    use frey_core::sandbox::Control;
     use frey_core::sandbox::Limits;
 
     fn policy() -> SandboxPolicy {

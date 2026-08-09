@@ -17,9 +17,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M10 discovery | ✅ done | regex mirroring provider semantics, BM25 |
 | M11 sandbox | ✅ done | fail-closed; runtime probing; found a real scope bug |
 | M12 built-in tools | ✅ done | argv-only shell, egress allowlist, workspace paths |
-| M13 skills | ⏳ in progress | |
-| M14 code mode | ⬜ | |
-| M15 multi-agent | ⬜ | |
+| M13 skills | ✅ done | ladder, trust boundary, no self-granted capabilities |
+| M14 code mode | ⚠️ partial | codegen + bindings + delegation; embedded engine deferred |
+| M15 multi-agent | ⏳ in progress | |
 | M16 A2A | ⬜ | |
 | M17 harness | ⬜ | |
 | M18 CLI | ⬜ | |
@@ -168,3 +168,30 @@ The built-in tool validators demonstrate the shape rather than just providing ut
 as a whole argv element and there is no command string to obfuscate. `https://api.github.com@evil.test/`
 is refused because it reads as GitHub and resolves elsewhere. An environment variable that looks
 like a credential is refused outright, since a sandbox never holds a secret.
+
+## M13–M14 — token efficiency
+
+Skills share the selector, budget and search index with deferred tools, because they are the same
+mechanism at a different altitude. Two properties get tests rather than paragraphs: the index rung
+stays small next to a body of the size the format actually recommends, and twenty skills do not cost
+twenty bodies at startup. The fixture is deliberately a realistic length — a two-line skill would
+make the ladder look pointless by measuring nothing.
+
+Skills are a trust boundary and are built that way. A skill outside a trusted root reaches the prompt
+as low-integrity text whatever it says about itself, and **a skill cannot grant itself
+capabilities** — anything ungranted is refused at load, not prompted for mid-run, because a mid-run
+prompt is exactly where an injected instruction would like to be answered.
+
+### Code mode is partial, deliberately
+
+Shipped: the typed API generator, the capability binding model, and the strategy that delegates to a
+provider which can already run the script. Not shipped in the default build: an embedded JavaScript
+engine.
+
+The reasoning, stated rather than hidden. Anthropic's programmatic tool calling runs the script on
+their side, so for that provider the correct implementation *is* delegation, not a second sandbox.
+And the generated surface earns its place regardless — it is emitted even when code mode is off,
+because it doubles as the description corpus tool search indexes. Pulling a JavaScript runtime into
+every build of a Rust agent framework is a cost every user pays for a feature most will delegate, so
+it belongs behind a feature flag. That is a scope reduction against the plan, and it is recorded
+here rather than quietly absorbed.
