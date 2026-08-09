@@ -9,9 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-frey-core = { path = "../frey-core", version = "0.0.0" }
-frey-context = { path = "../frey-context", version = "0.0.0" }
-frey-tools = { path = "../frey-tools", version = "0.0.0" }
+frey-core = { path = "../frey-core", version = "0.1.0" }
+frey-context = { path = "../frey-context", version = "0.1.0" }
+frey-tools = { path = "../frey-tools", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

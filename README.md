@@ -39,6 +39,18 @@ $ cargo run -p frey --example cache_planning
 
 No provider reports that second case. The only symptom is the bill.
 
+It also catches the subtler one: Anthropic search 20 content blocks backward from a breakpoint, and
+a single agentic turn with several tool calls can exceed that — making the *next* request miss cache
+entirely, again with no error from anyone.
+
+Frey is not the first thing to notice that prompt caches break; [`make-agents-cheaper`][mac] and
+[LeanCTX][lean] both attack this in Rust. It is the first framework where the cache plan is a core
+type, recomputed every turn from provider capabilities, and where the loop refuses a breakpoint the
+plan says is worthless.
+
+[mac]: https://github.com/Just-Agent/make-agents-cheaper
+[lean]: https://github.com/yvgude/lean-ctx
+
 The same example shows a prompt that caches fine on Opus 5 and **silently does not cache at all** on
 Haiku 4.5, because the minimum cacheable prefix differs eightfold between two models from one vendor.
 

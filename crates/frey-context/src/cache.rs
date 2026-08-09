@@ -264,6 +264,29 @@ impl CachePlanner {
     }
 }
 
+/// How far back a provider searches from a breakpoint for a previously written cache entry.
+///
+/// Anthropic's documented figure. It matters because exceeding it fails *silently*: a turn that
+/// adds more blocks than this makes the next request miss the cache with no error anywhere.
+pub const LOOKBACK_BLOCKS: u32 = 20;
+
+/// Check whether a turn added more blocks than the provider will look back through.
+///
+/// This is a different failure from churn and needs its own check. Churn is a segment changing;
+/// this is a segment staying identical while the *distance* to it grows past what the provider
+/// searches. A long agentic turn — several tool calls and their results — reaches it easily, and the
+/// symptom is only ever the bill.
+///
+/// The fix is an intermediate breakpoint every fifteen blocks or so, which is why the warning says
+/// that rather than merely reporting the number.
+#[must_use]
+pub fn check_lookback(blocks_added_this_turn: u32) -> Option<Warning> {
+    if blocks_added_this_turn <= LOOKBACK_BLOCKS {
+        return None;
+    }
+    Some(Warning::LookbackExceeded { blocks: blocks_added_this_turn, limit: LOOKBACK_BLOCKS })
+}
+
 fn churn_advice(kind: SegmentKind) -> smol_str::SmolStr {
     match kind {
         SegmentKind::Tools => {
@@ -502,6 +525,20 @@ mod tests {
         let plan = CachePlanner::plan(&[], &PreviousPrompt::none(), &profiles::opus5());
         assert!(!plan.caches_anything());
         assert!(plan.warnings.is_empty(), "nothing to warn about: {:?}", plan.warnings);
+    }
+
+    #[test]
+    fn a_turn_longer_than_the_providers_lookback_is_reported() {
+        // A different failure from churn, and one the adversarial re-check of the wedge turned up
+        // after the planner was written. The segment does not change; the distance to it grows past
+        // what the provider searches, and the next request misses cache with no error anywhere.
+        assert_eq!(check_lookback(5), None);
+        assert_eq!(check_lookback(LOOKBACK_BLOCKS), None, "exactly at the limit still hits");
+
+        let warning = check_lookback(31).expect("past the limit must be reported");
+        let Warning::LookbackExceeded { blocks, limit } = warning else { panic!("wrong warning") };
+        assert_eq!(blocks, 31);
+        assert_eq!(limit, 20);
     }
 
     #[test]

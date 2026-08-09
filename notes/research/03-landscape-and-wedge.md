@@ -144,3 +144,46 @@ Observed 2026 developer behaviours to design for:
 - [Rig on GitHub](https://github.com/0xPlaygrounds/rig) · [OpenFang on GitHub](https://github.com/RightNow-AI/openfang) · [AutoAgents on crates.io](https://crates.io/crates/autoagents)
 - [pydantic-ai toolsets](https://pydantic.dev/docs/ai/tools-toolsets/toolsets/) · [pydantic-ai overview](https://pydantic.dev/docs/ai/overview/)
 - [AG-UI docs](https://docs.ag-ui.com/introduction) · [Zylos: agent-frontend streaming protocols](https://zylos.ai/research/2026-05-03-agent-frontend-streaming-protocols-ag-ui-convergence/)
+
+
+---
+
+## 5. Adversarial re-check, 2026-08-09 (before the README went public)
+
+The notes committed to re-running §2 before making the claim in public. Doing so found two things,
+and honesty about both is worth more than the original phrasing.
+
+### Partial prior art exists, in a different shape
+
+- **`make-agents-cheaper`** (Just-Agent) — a Rust CLI that *"fingerprints prompt layers, checks tool
+  schema stability, analyzes cache breakpoints, records token usage, and compares baseline vs
+  cache-friendly runs."* This is close to Frey's cache-planning claim, and it is Rust.
+- **LeanCTX** — a local Rust binary described as a *"context intelligence layer"* that will
+  *"relocate volatile fields out of the cacheable prefix so a stable system prompt finally caches"*,
+  and pin reasoning effort across providers without breaking cache.
+
+Both are **analysis and preprocessing tools that sit beside an agent**. Neither is a framework whose
+core types carry a cache plan, and neither can refuse to place a breakpoint mid-run because neither
+owns the loop. That distinction is real but it is narrower than "nobody has done this", so the
+README says *"the cache planner refuses to waste your money"* and demonstrates it, rather than
+claiming novelty. The right posture toward both is credit, not competition: they solve an adjacent
+problem for people who do not want to change frameworks.
+
+**Revised wedge statement:** Frey is not the first thing to notice that prompt caches break. It is
+the first Rust *framework* where the cache plan is a core type, computed every turn from provider
+capabilities, and where the loop will refuse a breakpoint the plan says is worthless.
+
+### And it found a rule missing from our own planner
+
+Anthropic search **up to 20 content blocks backward** from a breakpoint. A single agentic turn that
+adds more than that — several tool calls and their results is enough — makes the *next* request miss
+the cache entirely, with no error from anyone. The documented fix is an intermediate breakpoint
+roughly every fifteen blocks.
+
+This was recorded in research 02 §1 and then not implemented: the planner checked whether a segment
+*changed*, never how far the distance to it had *grown*. Different failure, same silent symptom, and
+exactly the class of thing Frey claims to catch.
+
+Now implemented as `frey_context::cache::check_lookback`, wired into the loop, and tested. Finding
+it is the whole argument for doing the adversarial pass rather than declaring victory: the exercise
+that was supposed to defend a marketing claim improved the product instead.

@@ -261,3 +261,20 @@ which builds alone as well as together — someone will turn off exactly the one
   than a number that might be wrong — the syscall is not yet made.
 - **Nobody has run this in production**, including its author. The design is researched and the
   tests are real; operating experience is not there.
+
+## The adversarial re-check (2026-08-09)
+
+`notes/research/03` §5 records it in full. Two findings:
+
+1. **Partial prior art exists.** `make-agents-cheaper` and LeanCTX both attack prompt-cache waste in
+   Rust. Both are tools that sit *beside* an agent rather than frameworks whose core types carry a
+   cache plan, but that is a narrower claim than the original phrasing, so the README demonstrates
+   the behaviour instead of asserting novelty.
+2. **The check found a rule missing from our own planner.** Anthropic look back 20 content blocks
+   from a breakpoint; a long agentic turn exceeds that and the *next* request misses cache with no
+   error. It was in the research notes and never implemented — the planner checked whether a segment
+   changed, never how far the distance to it had grown. Now `check_lookback`, wired into the loop
+   and tested.
+
+An exercise meant to defend a marketing claim improved the product instead, which is the argument
+for doing it at all.

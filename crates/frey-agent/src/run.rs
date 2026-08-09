@@ -9,7 +9,7 @@
 //! executes.
 
 use frey_context::budget::{Budgeter, ContextBudget};
-use frey_context::cache::{CachePlanner, PreviousPrompt};
+use frey_context::cache::{CachePlanner, PreviousPrompt, check_lookback};
 use frey_context::hash::hash_parts;
 use frey_core::error::{ToolError, ToolErrorKind, ToolOutcome};
 use frey_core::event::{Event, EventKind, Warning};
@@ -231,6 +231,14 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     _ => None,
                 })
                 .collect();
+
+            // A long agentic turn can push the previous breakpoint further back than the provider
+            // searches, which misses the cache with no error from anyone.
+            let blocks_added =
+                u32::try_from(response.items.len() + calls.len()).unwrap_or(u32::MAX);
+            if let Some(warning) = check_lookback(blocks_added) {
+                warnings.push(warning);
+            }
 
             turns.push(Turn::new(Role::Assistant, response.items.clone()));
 

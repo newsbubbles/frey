@@ -68,6 +68,14 @@ pub enum Warning {
         /// What was evicted or summarised.
         action: SmolStr,
     },
+    /// A turn added more content blocks than the provider looks back through, so the next request
+    /// will miss the cache entirely — with no error from the provider.
+    LookbackExceeded {
+        /// How many blocks the turn added.
+        blocks: u32,
+        /// How far back the provider searches.
+        limit: u32,
+    },
     /// Presentation events were dropped to keep up.
     EventsDropped {
         /// How many.
