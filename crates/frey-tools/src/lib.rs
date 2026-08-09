@@ -20,7 +20,8 @@
 pub mod builtin;
 pub mod layer;
 pub mod registry;
-pub mod validate;
+/// Argument validation, re-exported from core where every dispatch surface can reach it.
+pub use frey_core::validate;
 
 pub use frey_macros::tool;
 

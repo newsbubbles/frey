@@ -14,12 +14,18 @@
 //! every tool call for constructs — `$ref`, `allOf`, `patternProperties` — that a tool definition
 //! has no business containing.
 //!
+//! It lives in `frey-core` rather than beside the tool layers because **every** surface that
+//! dispatches a call needs it, and the first version did not. Living in `frey-tools` meant the agent
+//! loop validated and the MCP server did not, so the same toolset behaved differently depending on
+//! who called it — which is exactly the divergence "one catalog, many presentations" exists to
+//! prevent. A demo project caught it by sending `"value": "true"` to a boolean parameter.
+//!
 //! The output is a [`ToolError`] rather than a bool, because the model is the one who has to fix
 //! it. Naming the field and saying what was expected turns a retry-with-identical-arguments into a
 //! corrected call, which is the difference between a weak model being unusable and being slow.
 
-use frey_core::error::{ToolError, ToolErrorKind};
-use frey_core::tool_def::JsonSchema;
+use crate::error::{ToolError, ToolErrorKind};
+use crate::tool_def::JsonSchema;
 use serde_json::Value;
 
 /// Check `args` against `schema`.

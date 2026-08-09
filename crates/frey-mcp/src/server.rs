@@ -27,11 +27,13 @@
 //! test [`tests::two_servers_answer_identically`] holds the line: nothing may accumulate in
 //! `Server` between calls, because the second replica does not have it.
 
-use frey_core::error::{ToolErrorKind, ToolOutcome};
+use frey_core::error::{ToolError, ToolErrorKind, ToolOutcome};
 use frey_core::ids::{CallId, RunId, SessionId, ToolName};
 use frey_core::item::Caller;
 use frey_core::taint::Provenance;
 use frey_core::tool::{Invocation, Resume, StepCx, ToolCx, Toolset};
+use frey_core::tool_def::ToolDefinition;
+use frey_core::validate::check_arguments;
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
@@ -183,6 +185,21 @@ impl<T: Toolset> Server<T> {
         value
     }
 
+    /// One tool's definition, for validating a call against it.
+    ///
+    /// Asking the toolset again rather than caching is deliberate: visibility is a function of the
+    /// current step, and a server that validated against a stale copy of a schema would reject
+    /// calls that are now correct.
+    async fn definition_of(&self, name: &str) -> Option<ToolDefinition> {
+        let cx = StepCx {
+            run: RunId::new("mcp"),
+            session: SessionId::new("stateless"),
+            task: String::new(),
+            tokens_available: u32::MAX,
+        };
+        self.toolset.definitions(&cx).await.ok()?.into_iter().find(|d| d.name.as_str() == name)
+    }
+
     async fn list_tools(&self) -> Result<Value, RpcError> {
         let cx = StepCx {
             run: RunId::new("mcp"),
@@ -232,6 +249,19 @@ impl<T: Toolset> Server<T> {
         };
         let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
+        // Validate against the tool's own declared schema before dispatching, exactly as the agent
+        // loop does. Skipping this here made the *same toolset* behave differently depending on
+        // whether an agent or a remote client called it — a demo project found it by sending
+        // `"value": "true"` to a boolean parameter and watching it be read as `false`.
+        //
+        // A remote caller is less trustworthy than the local model, not more, so if either surface
+        // were going to skip validation it should not have been this one.
+        if let Some(definition) = self.definition_of(name).await
+            && let Err(invalid) = check_arguments(&definition.input_schema, &arguments)
+        {
+            return Ok(tool_error(&invalid));
+        }
+
         let mut cx = ToolCx::new(
             RunId::new("mcp"),
             SessionId::new("stateless"),
@@ -275,19 +305,7 @@ impl<T: Toolset> Server<T> {
             // distinction is the whole reason tool errors are useful: a protocol error is the
             // client's problem and never reaches the model, while this does — carrying the guidance
             // that turns an identical retry into a corrected one.
-            ToolOutcome::Failed(e) | ToolOutcome::Denied(e) => {
-                let model = e.model();
-                let mut text = model.summary.clone();
-                if let Some(guidance) = &model.guidance {
-                    text.push(' ');
-                    text.push_str(guidance);
-                }
-                json!({
-                    "content": [{"type": "text", "text": text}],
-                    "isError": true,
-                    "_meta": {"io.modelcontextprotocol/errorKind": kind_name(e.kind())},
-                })
-            }
+            ToolOutcome::Failed(e) | ToolOutcome::Denied(e) => tool_error(&e),
             // The multi round-trip pattern: rather than calling back to the client, the server says
             // what it needs and the client retries the whole request with answers attached. This is
             // what makes statelessness possible at all.
@@ -321,6 +339,28 @@ struct RpcError {
 
 fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+/// Render a tool failure as a *result* the model can read.
+///
+/// Not a JSON-RPC error, and the distinction is the whole reason typed tool errors are useful: a
+/// protocol error is the client's problem and stops there, while this reaches the model carrying
+/// the guidance that makes the next attempt different from the last.
+///
+/// Shared by the validation path and the dispatch path so the two cannot produce different shapes
+/// for what a client sees as the same kind of failure.
+fn tool_error(error: &ToolError) -> Value {
+    let model = error.model();
+    let mut text = model.summary.clone();
+    if let Some(guidance) = &model.guidance {
+        text.push(' ');
+        text.push_str(guidance);
+    }
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "isError": true,
+        "_meta": {"io.modelcontextprotocol/errorKind": kind_name(error.kind())},
+    })
 }
 
 fn kind_name(kind: ToolErrorKind) -> &'static str {
@@ -607,6 +647,41 @@ mod tests {
         let text = reply["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("read-only"), "the summary: {text}");
         assert!(text.contains("Try note_count instead"), "and the guidance: {text}");
+    }
+
+    /// The agent loop validates arguments against the declared schema before dispatch. So must
+    /// this: the same toolset behaving differently depending on whether an agent or a remote client
+    /// called it is exactly the divergence "one catalog, many presentations" exists to prevent —
+    /// and a remote caller is the *less* trustworthy of the two.
+    ///
+    /// Found by a demo project sending `"value": "true"` to a boolean parameter and watching the
+    /// tool's own `as_bool` fallback read it as `false`.
+    #[test]
+    fn arguments_are_validated_before_the_tool_runs() {
+        let reply = call(&request(
+            1,
+            "tools/call",
+            json!({"name": "note_write", "arguments": {"text": 42}}),
+        ));
+
+        assert_eq!(reply["result"]["isError"], true);
+        assert_eq!(reply["result"]["_meta"]["io.modelcontextprotocol/errorKind"], "invalid_args");
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("`text` must be a string"), "{text}");
+    }
+
+    /// A missing required argument is refused here rather than reaching tool code, which would
+    /// otherwise have to hand-roll the same check in every tool.
+    #[test]
+    fn a_missing_required_argument_never_reaches_the_tool() {
+        let reply = call(&request(1, "tools/call", json!({"name": "note_write", "arguments": {}})));
+        assert_eq!(reply["result"]["isError"], true);
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("`text` is missing"), "{text}");
+        assert!(
+            !text.contains("read-only"),
+            "the tool did not run, so its own message is absent: {text}"
+        );
     }
 
     /// A client discovers what revision it is talking to by getting this code back, so it must be

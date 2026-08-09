@@ -37,6 +37,7 @@ pub mod taint;
 pub mod tool;
 pub mod tool_def;
 pub mod usage;
+pub mod validate;
 
 /// The types most callers want.
 pub mod prelude {
