@@ -19,7 +19,7 @@ thiserror.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
-frey-testkit = { path = "../frey-testkit" }
+frey-testkit = { path = "../frey-testkit", version = "0.1.0" }
 pollster = "0.4"
 
 [lints]
