@@ -13,6 +13,20 @@ quietly.
 > **Status: 0.x, pre-release.** The API will change. It is complete enough to build on and to
 > criticise; it has not been run in production by anyone, including its author.
 
+## Built with it
+
+Two demonstration projects, written to find out what using Frey is actually like rather than to
+advertise it. Between them they found **two real bugs** in the framework — both in the MCP server,
+both fixed the same day — plus a handful of rough edges that are not fixed. Each carries a
+`FINDINGS.md` saying so, including the parts that are still awkward.
+
+| Project | What it is |
+|---|---|
+| **[thicket](https://github.com/newsbubbles/thicket)** | Graph-shaped agent memory, served over MCP. One `Toolset`, exposed both as an MCP server and to an in-process agent. |
+| **[switchboard](https://github.com/newsbubbles/switchboard)** | A hosted, stateless MCP server on HTTP, with approval gates. Round-robins an approval handshake across two replicas to prove statelessness. |
+
+Start with thicket if you want to see tools and an agent loop; switchboard if you want the protocol.
+
 ---
 
 ## The four things that are actually different
@@ -164,8 +178,14 @@ challenge, and a frontend-executed tool are one code path.
 
 ## Honest limitations
 
-- **Nobody has run this in production.** The design is researched and the tests are real; the
-  operating experience is not there yet.
+- **Nobody has run this in production.** Two demo projects have been built on it and it has been
+  driven against live models, which is more than nothing and much less than operating experience.
+- **The agent-CLI adapter has not been run against a live vendor binary.** `AgentCli` delegates to
+  Claude Code so you can ride a subscription instead of paying per token, and its wire format is
+  tested against recorded output — but the machine it was written on had no working `claude`
+  install, so the end-to-end path is unverified. Treat it as untested until you have tested it.
+- **Only Claude Code has a delegation adapter.** The `AgentProvider` trait is general; Codex and
+  the rest are not implemented.
 - **Code mode is partial.** The typed API generator, the capability bindings, and delegation to a
   provider that can run the script all work. An embedded JavaScript engine is not in the default
   build — for Anthropic the correct implementation is delegation, and pulling a JS runtime into
