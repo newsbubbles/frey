@@ -1,6 +1,6 @@
 [package]
-name = "frey-context"
-description = "The Frey context engine: token budgeting and provider-aware prompt cache planning."
+name = "frey-mcp"
+description = "Model Context Protocol client for Frey: the stateless 2026-07-28 revision, with a shim for older servers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,13 @@ authors.workspace = true
 
 [dependencies]
 frey-core = { path = "../frey-core", version = "0.0.0" }
-blake3 = { version = "1", default-features = false, features = ["std"] }
-smol_str.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-proptest = "1"
-serde_json.workspace = true
+pollster = "0.4"
 
 [lints]
 workspace = true

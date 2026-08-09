@@ -232,6 +232,25 @@ provider adapter changed.
 *Costs:* `frey-core` gains `futures-core` and `dynosaur`. Both are small and neither pulls in a
 runtime, so the crate still compiles without tokio and its pure functions stay trivially testable.
 
+## ADR-0020 — Implement the MCP client directly, keep `rmcp` as a later transport — **Accepted** *(2026-08-09)*
+
+ADR-0002 said "build on `rmcp`, own our domain types". Building M9 revealed that the second half was
+doing all the work. What Frey actually needs from MCP is the *policy* around the wire: negotiation
+between the stateless revision and older servers, catalog caching with a capped freshness hint,
+defensive re-sorting so a server cannot churn the prompt cache, namespacing, and mapping
+`input_required` onto Frey's one `NeedsInput` type. None of that comes from an SDK, and all of it is
+where the bugs are.
+
+The wire format itself is JSON-RPC over the HTTP client that already exists, and it is small enough
+that implementing it directly makes the whole client testable against a fake transport with no
+network and no server — twenty-one tests, including hostile-server cases.
+
+`rmcp` remains a good option as a *transport* behind `Transport`, and adopting it later changes no
+public type. What has changed is the claim: Frey does not currently depend on it.
+
+*Wrong if:* the protocol grows enough that tracking it by hand becomes the larger cost. The
+`Transport` seam is where `rmcp` would slot in.
+
 ## ADR-0016 — Licence: **MIT OR Apache-2.0** dual — **Accepted**
 
 Rust ecosystem norm for libraries; maximum adoption friendliness with an explicit patent grant

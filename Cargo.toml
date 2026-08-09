@@ -5,6 +5,7 @@ members = [
     "crates/frey-context",
     "crates/frey-core",
     "crates/frey-macros",
+    "crates/frey-mcp",
     "crates/frey-providers",
     "crates/frey-testkit",
     "crates/frey-tools",

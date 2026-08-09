@@ -13,9 +13,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M6 macros | ✅ done | parameter doc comments become schema descriptions |
 | M7 tool tower | ✅ done | policy, approval, redaction, truncation, registry |
 | M8 agent loop | ✅ done | first end-to-end agent; journal, replay, ledger |
-| M9 MCP | ⏳ in progress | |
-| M10 discovery | ⬜ | |
-| M11 sandbox | ⬜ | |
+| M9 MCP | ✅ done | stateless client, legacy shim, defensive re-sort |
+| M10 discovery | ✅ done | regex mirroring provider semantics, BM25 |
+| M11 sandbox | ⏳ in progress | |
 | M12 built-in tools | ⬜ | |
 | M13 skills | ⬜ | |
 | M14 code mode | ⬜ | |
@@ -113,3 +113,31 @@ retrying into silence.
 One documented limit: the replay fingerprint compares request *shape* — model, turn count, tool
 names — not full prompt text. A journal storing every prompt verbatim would be enormous. The test
 that pins this also documents what it therefore cannot catch.
+
+## M9–M10 — MCP and discovery
+
+ADR-0020 records a change of plan: the MCP client is implemented directly rather than on `rmcp`. The
+wire format is JSON-RPC over the HTTP client that already exists; what Frey actually needed was the
+*policy* around it, which no SDK provides — negotiation, catalog caching, defensive re-sorting,
+namespacing, and mapping `input_required` onto the one `NeedsInput` type. Implementing it directly
+makes the whole client testable against a fake transport, with no network and no server.
+
+An MCP server is an untrusted party, and the client is built that way:
+
+- **Listings are re-sorted.** The specification asks servers to be deterministic to protect prompt
+  caches. A server that ignores it would churn the tool block's hash every turn, and the cost lands
+  on the client — so the client defends itself.
+- **Freshness hints are capped** at an hour. A `ttlMs` of a year would pin a stale catalog.
+- **Catalogs are private by default.** Sharing across principals when the server did not say it was
+  safe would leak one user's tools to another.
+- **Tool results are `Untrusted` by construction**, with provenance recording which server and tool.
+- **A method-not-found for `server/discover` is negotiation, not failure** — it is how a
+  pre-stateless server identifies itself, and treating it as an error would make every existing
+  server unusable.
+
+Discovery mirrors the provider-native semantics deliberately, down to the 200-character regex limit
+and the 5-result default, so a query behaves the same whether Frey ran it or delegated it. Both
+strategies index the same four fields the provider does: name, description, argument names, and
+argument descriptions. The BM25 test that finds `db_query` from "postgres dialect" only passes
+because that tool's parameter is documented — which is the concrete reason an undocumented parameter
+is a defect rather than a style preference.

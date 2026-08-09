@@ -241,6 +241,7 @@ dependencies = [
  "frey-core",
  "proptest",
  "serde",
+ "serde_json",
  "smol_str",
  "thiserror",
 ]
@@ -266,6 +267,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "frey-mcp"
+version = "0.0.0"
+dependencies = [
+ "frey-core",
+ "pollster",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror",
 ]
 
 [[package]]

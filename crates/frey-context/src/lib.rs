@@ -38,10 +38,12 @@ pub mod budget;
 pub mod cache;
 pub mod hash;
 pub mod profiles;
+pub mod search;
 
 /// The types most callers want.
 pub mod prelude {
     pub use crate::budget::{Budgeter, ContextBudget, Floors};
     pub use crate::cache::{CachePlan, CachePlanner, PreviousPrompt};
     pub use crate::hash::{hash_parts, hash_text};
+    pub use crate::search::{Bm25Search, RegexSearch};
 }
