@@ -1,7 +1,7 @@
 # Dogfooding, day 1 — building on it
 
 [`00-live-provider-findings.md`](00-live-provider-findings.md) covers driving Frey against live
-models. This covers building two real projects on it, which found different things: the live tests
+models. This covers building three real projects on it, which found different things: the live tests
 found *behaviour* bugs, and the projects found *shape* problems.
 
 - **[thicket](https://github.com/newsbubbles/thicket)** — graph-shaped agent memory over MCP.
