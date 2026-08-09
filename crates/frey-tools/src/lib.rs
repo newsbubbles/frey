@@ -20,6 +20,7 @@
 pub mod builtin;
 pub mod layer;
 pub mod registry;
+pub mod validate;
 
 pub use frey_macros::tool;
 

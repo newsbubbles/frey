@@ -21,8 +21,16 @@ use frey_core::tool::{Invocation, ToolCx};
 use frey_core::tool_def::ToolDefinition;
 use frey_core::usage::{CostEstimate, UsageTotals};
 use frey_tools::layer::PolicyLayer;
+use frey_tools::validate::check_arguments;
 
 use crate::journal::{Effect, Journal, effect_of};
+
+/// How many tool calls one model response may have executed, unless the agent says otherwise.
+///
+/// Chosen to sit above what a competent model asks for and far below a runaway. Well-behaved
+/// parallel fan-out in the wild is single digits; the pathological case measured during the first
+/// live session was about 145 calls in one response from an 8B model that had lost the thread.
+pub const DEFAULT_MAX_TOOL_CALLS_PER_TURN: u32 = 32;
 
 /// Why a run ended.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -102,6 +110,7 @@ pub struct Agent<P, T> {
     model: frey_core::ids::ModelId,
     system: Option<String>,
     max_turns: u32,
+    max_tool_calls_per_turn: u32,
     session: SessionId,
 }
 
@@ -114,6 +123,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             model: model.into(),
             system: None,
             max_turns: 24,
+            max_tool_calls_per_turn: DEFAULT_MAX_TOOL_CALLS_PER_TURN,
             session: SessionId::new("default"),
         }
     }
@@ -129,6 +139,22 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
     #[must_use]
     pub fn max_turns(mut self, max_turns: u32) -> Self {
         self.max_turns = max_turns;
+        self
+    }
+
+    /// Cap how many tool calls a *single* model response may have executed.
+    ///
+    /// This is a different limit from [`max_turns`](Self::max_turns) and neither implies the other.
+    /// A turn limit bounds how many times the model is consulted; this bounds how much work one
+    /// answer can demand. Raise it for an agent that legitimately fans out — a parallel file read
+    /// over a large tree is well-behaved — and lower it when every tool call has a side effect.
+    ///
+    /// Excess calls are refused individually, with an error the model can act on, rather than
+    /// dropped. A silently discarded call looks to the model exactly like one that succeeded and
+    /// returned nothing.
+    #[must_use]
+    pub fn max_tool_calls_per_turn(mut self, max: u32) -> Self {
+        self.max_tool_calls_per_turn = max;
         self
     }
 
@@ -262,9 +288,24 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 });
             }
 
-            // 5. Run the tools the model asked for, through the layers.
+            // 5. Run the tools the model asked for, through the layers — up to the fan-out cap.
+            //
+            // Refusing the excess individually rather than truncating the list is the whole point.
+            // A dropped call produces no result, and a tool call with no result is indistinguishable
+            // to the model from one that succeeded and returned nothing, so it proceeds on an
+            // invented premise. A refusal it can read makes the next turn a retry with fewer calls.
+            let requested = u32::try_from(calls.len()).unwrap_or(u32::MAX);
+            if requested > self.max_tool_calls_per_turn {
+                warnings.push(Warning::ToolCallsCapped {
+                    requested,
+                    cap: self.max_tool_calls_per_turn,
+                });
+            }
+
             let mut results = Vec::new();
-            for call in calls {
+            for (index, call) in calls.into_iter().enumerate() {
+                let over_cap =
+                    u32::try_from(index).unwrap_or(u32::MAX) >= self.max_tool_calls_per_turn;
                 let cx = ToolCx {
                     run: journal.run.clone(),
                     session: self.session.clone(),
@@ -279,18 +320,42 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 };
 
                 let definition = definitions.iter().find(|d| d.name == call.name);
-                let outcome = match definition {
-                    None => ToolOutcome::Failed(
+                let outcome = if over_cap {
+                    ToolOutcome::Denied(
                         ToolError::new(
-                            ToolErrorKind::NotFound,
-                            format!("there is no tool called `{}`", call.name),
+                            ToolErrorKind::Denied,
+                            format!(
+                                "this turn asked for {requested} tool calls; only {} may run at once",
+                                self.max_tool_calls_per_turn
+                            ),
                         )
-                        .guide("Use one of the tools that were listed, or search for one."),
-                    ),
-                    Some(def) => match PolicyLayer::check(def, &invocation, &cx) {
-                        Some(denied) => ToolOutcome::Denied(denied),
-                        None => self.tools.call(invocation, &cx).await,
-                    },
+                        .guide(
+                            "This call was not executed. Ask for fewer tools in one turn: make the \
+                             calls you most need now, read the results, and continue from there.",
+                        ),
+                    )
+                } else {
+                    match definition {
+                        None => ToolOutcome::Failed(
+                            ToolError::new(
+                                ToolErrorKind::NotFound,
+                                format!("there is no tool called `{}`", call.name),
+                            )
+                            .guide("Use one of the tools that were listed, or search for one."),
+                        ),
+                        // Policy is consulted before the arguments are checked, and the order is not
+                        // cosmetic. Telling a model that its arguments to a forbidden tool are
+                        // malformed invites it to correct them and try again, which is a worse answer
+                        // than a refusal — and it discloses the tool's schema to a caller that is not
+                        // allowed to use it.
+                        Some(def) => match PolicyLayer::check(def, &invocation, &cx) {
+                            Some(denied) => ToolOutcome::Denied(denied),
+                            None => match check_arguments(&def.input_schema, &invocation.args) {
+                                Err(invalid) => ToolOutcome::Failed(invalid),
+                                Ok(()) => self.tools.call(invocation, &cx).await,
+                            },
+                        },
+                    }
                 };
 
                 let (content, is_error, elided) = render_outcome(&outcome);
@@ -463,6 +528,99 @@ mod tests {
             args: serde_json::json!({}),
             caller: Caller::Direct,
         })
+    }
+
+    fn numbered_call(name: &str, n: usize) -> Item {
+        Item::ToolCall(ToolCallItem {
+            id: CallId::new(format!("c{n}")),
+            name: ToolName::new(name),
+            args: serde_json::json!({}),
+            caller: Caller::Direct,
+        })
+    }
+
+    /// A single response asking for a great many tools does not get to run them all.
+    ///
+    /// From live traffic rather than imagination: `meta-llama/llama-3.1-8b-instruct` emitted
+    /// roughly 145 tool calls in one response, and before this cap existed the loop executed every
+    /// one of them — 267 journal effects and ten times the cost of the successful run.
+    #[test]
+    fn a_runaway_response_is_capped_rather_than_executed() {
+        let flood: Vec<Item> = (0..40).map(|n| numbered_call("fs_read", n)).collect();
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(flood),
+            Scripted::text("I will slow down."),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model").max_tool_calls_per_turn(5);
+        let out = pollster::block_on(agent.run("read everything")).unwrap();
+
+        let executed = out
+            .journal
+            .entries
+            .iter()
+            .filter(|e| matches!(&e.effect, Effect::ToolResult { is_error: false, .. }))
+            .count();
+        assert_eq!(executed, 5, "only the permitted calls run");
+
+        let refused = out
+            .journal
+            .entries
+            .iter()
+            .filter(|e| matches!(&e.effect, Effect::ToolResult { is_error: true, .. }))
+            .count();
+        assert_eq!(refused, 35, "the rest are refused, not silently dropped");
+
+        assert!(
+            out.warnings.contains(&Warning::ToolCallsCapped { requested: 40, cap: 5 }),
+            "the operator is told, in numbers: {:?}",
+            out.warnings
+        );
+    }
+
+    /// The refusal has to reach the model, or it will assume the call succeeded and returned
+    /// nothing — which is a worse failure than the runaway, because it is silent.
+    #[test]
+    fn a_capped_call_tells_the_model_what_to_do_instead() {
+        let flood: Vec<Item> = (0..10).map(|n| numbered_call("fs_read", n)).collect();
+        let model =
+            ScriptedModel::new(vec![Scripted::tool_calls(flood), Scripted::text("understood")]);
+        let agent =
+            Agent::new(model.clone(), tools(&["fs_read"]), "test-model").max_tool_calls_per_turn(2);
+        pollster::block_on(agent.run("read everything")).unwrap();
+
+        // What the model was shown on its second turn contains the guidance, not just a failure.
+        let second = &model.saw()[1];
+        let shown: String = second
+            .turns
+            .iter()
+            .flat_map(|t| t.items.iter())
+            .filter_map(|i| match i {
+                Item::ToolResult(r) => Some(r.content.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(shown.contains("only 2 may run at once"), "the limit is named: {shown}");
+        assert!(shown.contains("Ask for fewer tools"), "and what to do about it: {shown}");
+    }
+
+    /// The default has to be high enough that ordinary parallel fan-out is untouched. A model that
+    /// reads six files at once is behaving well, and a cap that punishes it would push agents
+    /// toward the serial pattern that costs extra round trips.
+    #[test]
+    fn ordinary_parallel_fan_out_is_not_capped() {
+        let calls: Vec<Item> = (0..8).map(|n| numbered_call("fs_read", n)).collect();
+        let model = ScriptedModel::new(vec![Scripted::tool_calls(calls), Scripted::text("done")]);
+        let out = pollster::block_on(
+            Agent::new(model, tools(&["fs_read"]), "test-model").run("read the tree"),
+        )
+        .unwrap();
+
+        assert!(
+            !out.warnings.iter().any(|w| matches!(w, Warning::ToolCallsCapped { .. })),
+            "eight parallel reads is normal behaviour, not a runaway"
+        );
     }
 
     #[test]

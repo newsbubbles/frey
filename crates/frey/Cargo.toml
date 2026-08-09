@@ -41,6 +41,9 @@ full = ["http", "mcp", "sandbox", "a2a", "harness"]
 frey-testkit = { path = "../frey-testkit", version = "0.1.1" }
 pollster = "0.4"
 serde_json.workspace = true
+# The live provider examples need a real reactor. `HttpProvider` is built on `reqwest`, which is
+# built on Tokio, so `pollster::block_on` is fine for the scripted model and not for the network.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true

@@ -193,10 +193,26 @@ fn decode_chat(
 ) -> Result<Response, ProviderError> {
     let choice =
         body.get("choices").and_then(Value::as_array).and_then(|c| c.first()).ok_or_else(|| {
-            ProviderError::Protocol {
-                provider: provider.clone(),
-                detail: "response has no `choices`".into(),
-            }
+            // OpenRouter answers 200 with an error object in the body when an upstream provider
+            // fails, moderates, or the route dead-ends. Reporting only "no choices" throws away the
+            // one sentence that says which — and that sentence is usually the actionable part.
+            // Observed live: an intermittent failure on `meta-llama/llama-3.1-8b-instruct` that was
+            // undiagnosable from Frey's own error message.
+            let detail = match body.get("error") {
+                Some(error) => {
+                    let code = error
+                        .get("code")
+                        .map_or_else(|| "none".to_string(), std::string::ToString::to_string);
+                    let message =
+                        error.get("message").and_then(Value::as_str).unwrap_or("no message given");
+                    format!("provider returned an error instead of a completion (code {code}): {message}")
+                }
+                None => format!(
+                    "response has no `choices` and no `error`; body began: {}",
+                    elide(&body.to_string(), 300)
+                ),
+            };
+            ProviderError::Protocol { provider: provider.clone(), detail }
         })?;
 
     let message = choice.get("message").unwrap_or(&Value::Null);
@@ -242,6 +258,21 @@ fn decode_chat(
         model,
         provider: provider.clone(),
     })
+}
+
+/// Cut `text` to `max` bytes on a character boundary, saying how much was withheld.
+///
+/// An error message that quietly loses its tail is the same defect as a tool result that quietly
+/// loses its tail, so it is reported the same way.
+fn elide(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut cut = max;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}… ({} more bytes)", &text[..cut], text.len() - cut)
 }
 
 fn decode_chat_usage(usage: Option<&Value>, reports_cost: bool) -> Usage {

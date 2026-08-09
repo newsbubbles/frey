@@ -38,8 +38,35 @@ impl std::fmt::Debug for HttpProvider {
     }
 }
 
+/// How long to wait, and for what.
+///
+/// Two separate clocks, because "slow" and "hung" are different failures and a single total
+/// deadline cannot tell them apart. A long generation is not a hang: a model may legitimately think
+/// for minutes, and `z-ai/glm-4.7-flash` took 98 seconds for a three-turn run during the first live
+/// session. But a connection that is accepted and then never speaks is a hang however long you
+/// wait, and the default `reqwest` client waits forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    /// Establishing the TCP and TLS connection. Short: a provider that cannot be reached quickly
+    /// cannot be reached.
+    pub connect_ms: u64,
+    /// The gap between reads once the response has begun, *not* a deadline for the whole request.
+    /// A streaming response resets this on every chunk, so a slow generation never trips it and a
+    /// stalled one always does.
+    pub read_ms: u64,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        // Ten seconds to connect, five minutes of silence to give up. The read budget is deliberate
+        // rather than round: a non-streaming request to a slow reasoning model produces no bytes at
+        // all until the generation finishes, so this is the real ceiling on a single completion.
+        Self { connect_ms: 10_000, read_ms: 300_000 }
+    }
+}
+
 impl HttpProvider {
-    /// An adapter speaking `dialect` to `base_url`.
+    /// An adapter speaking `dialect` to `base_url`, with default [`Timeouts`].
     ///
     /// # Errors
     /// Returns [`ProviderError::Network`] if the HTTP client cannot be built.
@@ -48,9 +75,24 @@ impl HttpProvider {
         base_url: impl Into<String>,
         auth: Auth,
     ) -> Result<Self, ProviderError> {
+        Self::with_timeouts(dialect, base_url, auth, Timeouts::default())
+    }
+
+    /// An adapter with explicit timeouts.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Network`] if the HTTP client cannot be built.
+    pub fn with_timeouts(
+        dialect: Arc<dyn Dialect>,
+        base_url: impl Into<String>,
+        auth: Auth,
+        timeouts: Timeouts,
+    ) -> Result<Self, ProviderError> {
         let id = dialect.id();
         let client = reqwest::Client::builder()
             .user_agent(concat!("frey/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_millis(timeouts.connect_ms))
+            .read_timeout(std::time::Duration::from_millis(timeouts.read_ms))
             .build()
             .map_err(|e| ProviderError::Network { provider: id, detail: e.to_string() })?;
         Ok(Self {

@@ -81,6 +81,20 @@ pub enum Warning {
         /// How many.
         count: u64,
     },
+    /// One model response asked for more tool calls than the run permits in a single turn, so the
+    /// excess was refused rather than executed.
+    ///
+    /// A turn limit bounds how many times the model is *called*; it does nothing about how much
+    /// work a single response demands. A weak model that loses the thread can emit hundreds of
+    /// calls in one response, and executing them is a runaway with real side effects — not merely
+    /// a large bill. `meta-llama/llama-3.1-8b-instruct` produced roughly 145 in one response during
+    /// the first live session.
+    ToolCallsCapped {
+        /// How many the model asked for.
+        requested: u32,
+        /// How many were permitted.
+        cap: u32,
+    },
 }
 
 /// Something that happened during a run.
