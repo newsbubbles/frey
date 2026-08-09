@@ -21,9 +21,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M14 code mode | ⚠️ partial | codegen + bindings + delegation; embedded engine deferred |
 | M15 multi-agent | ✅ done | grant monotonicity, backpressure rule |
 | M16 A2A | ✅ done | agent cards, 8-state lifecycle, stream rules |
-| M17 harness | ⏳ in progress | |
-| M18 CLI | ⬜ | |
-| M19 release | ⬜ | |
+| M17 harness | ✅ done | AG-UI serialiser, sessions, doctor |
+| M18 CLI | ✅ done | doctor/profiles/tools, machine-readable |
+| M19 release | ✅ done | facade, examples, README, CI matrix |
 
 ---
 
@@ -223,3 +223,41 @@ trustworthy.** Verification changes who is responsible for the text, not whether
 The test that pins this uses a signed card carrying an injected instruction, and asserts the text
 arrives indexed and low-integrity. An *invalid* signature is refused outright — worse than unsigned,
 because someone tried.
+
+## M17–M19 — harness, CLI, release
+
+The AG-UI layer is a serialiser rather than an adapter, which is ADR-0015 paying off: the internal
+event bus was already in AG-UI's shape. Two projection rules matter more than the mapping. An
+operator diagnostic never reaches a frontend — a stack trace in a UI helps nobody and can leak a
+path or a hostname. And a cost the provider never reported is absent rather than zero, because a
+zero in a UI reads as "this was free", which is a different claim from "nobody said".
+
+A headless surface with an interactive approval policy **fails at build time**. Otherwise it stops
+at the first gated action and waits for a human who is not there, discovered at three in the morning.
+
+`doctor`'s JSON output is treated as an API and pinned by a test, because a coding agent parses it
+to orient in an unfamiliar project — the highest-value R13 feature in the framework.
+
+The facade's prelude is curated rather than a set of glob re-exports. Three names genuinely collide:
+`Request` means one thing to a provider and another to MCP, `ApprovalPolicy` exists at both the tool
+and session layer, and `validate` is a verb two subsystems need. Globbing would make which one you
+got depend on import order, so the colliding names are aliased and both stay reachable.
+
+Running the examples found two real polish problems that no test had: journal entries printed as
+opaque discriminants, and the same warning repeated on every turn. A warning repeated every turn is
+noise that trains people to ignore warnings, so distinct ones are now reported once.
+
+### Final state
+
+390 tests. Thirteen crates. Clippy clean under `-D warnings` on every feature combination, each of
+which builds alone as well as together — someone will turn off exactly the one never tested without.
+
+### What is not done
+
+- **Code mode has no embedded engine** in the default build (M14, recorded above).
+- **No live provider tests.** Everything is exercised against the scripted model and recorded
+  shapes; a cassette corpus from real traffic needs API keys.
+- **The Landlock ABI is not actually detected.** `doctor` reports the conservative answer rather
+  than a number that might be wrong — the syscall is not yet made.
+- **Nobody has run this in production**, including its author. The design is researched and the
+  tests are real; operating experience is not there.

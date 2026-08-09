@@ -1,0 +1,22 @@
+[package]
+name = "frey-harness"
+description = "Harness plumbing for Frey: sessions, approvals, surfaces, and the AG-UI event projection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+frey-agent = { path = "../frey-agent", version = "0.0.0" }
+frey-context = { path = "../frey-context", version = "0.0.0" }
+frey-tools = { path = "../frey-tools", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

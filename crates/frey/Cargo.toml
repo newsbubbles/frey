@@ -1,0 +1,46 @@
+[package]
+name = "frey"
+description = "A Rust agent framework where the context window is a managed resource: MCP-native tooling, provider-aware prompt caching, capability-scoped execution, and deterministic replay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["agent", "llm", "mcp", "ai", "framework"]
+categories = ["development-tools", "api-bindings"]
+readme = "../../README.md"
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+frey-agent = { path = "../frey-agent", version = "0.0.0" }
+frey-context = { path = "../frey-context", version = "0.0.0" }
+frey-tools = { path = "../frey-tools", version = "0.0.0" }
+frey-providers = { path = "../frey-providers", version = "0.0.0", default-features = false }
+frey-sandbox = { path = "../frey-sandbox", version = "0.0.0", optional = true }
+frey-mcp = { path = "../frey-mcp", version = "0.0.0", optional = true }
+frey-a2a = { path = "../frey-a2a", version = "0.0.0", optional = true }
+frey-harness = { path = "../frey-harness", version = "0.0.0", optional = true }
+
+[features]
+default = ["http", "mcp", "sandbox", "harness"]
+# Real HTTP providers. Off, the wire mapping remains and can be tested without a network.
+http = ["frey-providers/http"]
+# Model Context Protocol client.
+mcp = ["dep:frey-mcp"]
+# Cross-platform process confinement.
+sandbox = ["dep:frey-sandbox"]
+# Agent-to-agent interoperability.
+a2a = ["dep:frey-a2a"]
+# Sessions, approvals, AG-UI, and `doctor`.
+harness = ["dep:frey-harness"]
+# Everything.
+full = ["http", "mcp", "sandbox", "a2a", "harness"]
+
+[dev-dependencies]
+frey-testkit = { path = "../frey-testkit" }
+pollster = "0.4"
+serde_json.workspace = true
+
+[lints]
+workspace = true

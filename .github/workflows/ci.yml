@@ -34,11 +34,40 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # trybuild output is compiler-version sensitive; pin the UI check to one platform.
+      # trybuild's expected output is compiler-version sensitive, so the UI suite runs on one
+      # platform rather than failing three ways for the same reason.
       - run: cargo test --workspace
         if: matrix.os == 'ubuntu-latest'
       - run: cargo test --workspace -- --skip forbidden_flows_do_not_compile
         if: matrix.os != 'ubuntu-latest'
+
+  features:
+    name: feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The optional features have to build alone as well as together: someone will turn off
+      # exactly the one we never tested without.
+      - run: cargo check -p frey --no-default-features
+      - run: cargo check -p frey --no-default-features --features mcp
+      - run: cargo check -p frey --no-default-features --features sandbox
+      - run: cargo check -p frey --no-default-features --features a2a
+      - run: cargo check -p frey --features full
+
+  examples:
+    name: examples and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Examples in a README that no longer compile are worse than no examples.
+      - run: cargo run -p frey --example cache_planning
+      - run: cargo run -p frey --example agent_loop
+      - run: cargo run -p frey-cli -- profiles
+      - run: cargo doc --workspace --no-deps
 
   msrv:
     name: MSRV

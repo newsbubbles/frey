@@ -55,6 +55,18 @@ pub enum Effect {
     },
 }
 
+impl Effect {
+    /// A short label, so a journal can be read without a debugger.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ModelResponse { .. } => "model-response",
+            Self::ToolResult { .. } => "tool-result",
+            Self::InputSupplied { .. } => "input-supplied",
+        }
+    }
+}
+
 /// Enough of a request to notice that it changed, without storing the whole prompt twice.
 ///
 /// Turn count and tool names rather than full text: a journal that stored every prompt verbatim
@@ -369,6 +381,12 @@ mod tests {
             .record_event(Event::root(SeqId(1), EventKind::RunStarted { run: RunId::new("r1") }));
         assert_eq!(journal.events.len(), 1);
         assert!(matches!(journal.events[0].kind, EventKind::RunStarted { .. }));
+    }
+
+    #[test]
+    fn effects_are_labelled_so_a_journal_reads_without_a_debugger() {
+        let journal = recorded();
+        assert_eq!(journal.entries[0].effect.label(), "model-response");
     }
 
     #[test]

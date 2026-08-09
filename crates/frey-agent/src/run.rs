@@ -239,6 +239,9 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     SeqId(turn_index),
                     EventKind::RunFinished { totals: totals.clone(), cost: None },
                 ));
+                // The same warning on every turn is noise that trains people to ignore warnings.
+                // Each distinct one is reported once, in the order it first appeared.
+                warnings.dedup();
                 return Ok(RunOutput {
                     items: response.items,
                     cost: totals.reported_cost.map(|amount| CostEstimate {

@@ -1,0 +1,20 @@
+[package]
+name = "frey-cli"
+description = "The `frey` command line: diagnose a project, inspect a catalog, and read a run's cost."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "frey"
+path = "src/main.rs"
+
+[dependencies]
+frey = { path = "../frey", version = "0.0.0" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
