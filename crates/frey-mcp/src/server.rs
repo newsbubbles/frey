@@ -31,7 +31,7 @@ use frey_core::error::{ToolErrorKind, ToolOutcome};
 use frey_core::ids::{CallId, RunId, SessionId, ToolName};
 use frey_core::item::Caller;
 use frey_core::taint::Provenance;
-use frey_core::tool::{Invocation, StepCx, ToolCx, Toolset};
+use frey_core::tool::{Invocation, Resume, StepCx, ToolCx, Toolset};
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
@@ -232,14 +232,26 @@ impl<T: Toolset> Server<T> {
         };
         let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
-        let cx = ToolCx {
-            run: RunId::new("mcp"),
-            session: SessionId::new("stateless"),
+        let mut cx = ToolCx::new(
+            RunId::new("mcp"),
+            SessionId::new("stateless"),
             // Empty rather than permissive. A server hands out no capability it was not built with;
             // whatever the toolset needs, it holds itself, and a remote caller cannot widen it.
-            grants: frey_core::capability::GrantSet::empty(),
-            provenance: Provenance::new(format!("mcp:{}/{name}", self.info.name)),
-        };
+            frey_core::capability::GrantSet::empty(),
+            Provenance::new(format!("mcp:{}/{name}", self.info.name)),
+        );
+
+        // The other half of the multi round-trip pattern. A tool that needed input returned what it
+        // wanted plus a sealed state; the client re-sends the *same call* with answers attached,
+        // and because nothing was remembered here, those answers are the only way the tool can
+        // continue. A server that emits `input_required` and cannot read the retry has implemented
+        // half a handshake.
+        if let Some(answers) = params.get("inputResponses").and_then(Value::as_array) {
+            cx = cx.resuming(Resume {
+                state: params.get("requestState").cloned().unwrap_or(Value::Null),
+                answers: answers.clone(),
+            });
+        }
         let invocation = Invocation {
             id: CallId::new("mcp-call"),
             name: ToolName::new(name),
@@ -409,6 +421,113 @@ mod tests {
 
     fn server() -> Server<Notes> {
         Server::new("notes-server", "1.0.0", Notes)
+    }
+
+    /// A tool that will not act until a human approves the literal action.
+    struct Gated;
+
+    impl Toolset for Gated {
+        fn name(&self) -> SmolStr {
+            "gated".into()
+        }
+
+        async fn definitions(&self, _cx: &StepCx) -> Result<Vec<ToolDefinition>, ToolsetError> {
+            Ok(vec![ToolDefinition::new(
+                "deploy",
+                "Deploy a version to production.",
+                JsonSchema::new(json!({
+                    "type": "object",
+                    "properties": {"version": {"type": "string", "description": "Version to deploy."}},
+                    "required": ["version"]
+                }))
+                .unwrap(),
+            )])
+        }
+
+        async fn call(&self, invocation: Invocation, cx: &ToolCx) -> ToolOutcome<ToolValue> {
+            let version = invocation.args.get("version").and_then(Value::as_str).unwrap_or("?");
+
+            match &cx.resume {
+                // First attempt: say what is needed and seal the state. Nothing is remembered here.
+                None => ToolOutcome::NeedsInput(frey_core::error::NeedsInput {
+                    token: "deploy-pending".into(),
+                    requests: vec![frey_core::error::InputRequest::Approval {
+                        literal: format!("deploy {version} to production"),
+                        risk: frey_core::error::Risk::High,
+                    }],
+                }),
+                Some(resume) => {
+                    let approved = resume.answers.first().and_then(Value::as_bool).unwrap_or(false);
+                    if approved {
+                        ToolOutcome::Ok(Tainted::with_provenance(
+                            ToolContent::text(format!("deployed {version}")),
+                            cx.provenance.clone(),
+                        ))
+                    } else {
+                        ToolOutcome::Denied(ToolError::new(
+                            ToolErrorKind::Denied,
+                            "the operator declined the deployment",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fn gated_call(params: Value) -> Value {
+        let server = Server::new("gated", "1.0.0", Gated);
+        pollster::block_on(server.handle(&request(1, "tools/call", params))).unwrap()
+    }
+
+    /// The multi round-trip pattern, both halves. A server that emits `input_required` and cannot
+    /// read the retry has implemented half a handshake — which is what Frey shipped until this
+    /// test existed.
+    #[test]
+    fn a_tool_that_needs_input_can_be_resumed_by_a_retry() {
+        let first = gated_call(json!({"name": "deploy", "arguments": {"version": "4.2"}}));
+        assert_eq!(first["result"]["resultType"], "input_required");
+
+        // The approval shows the literal action, never a paraphrase: a summary is exactly where an
+        // injected instruction survives review by the person clicking yes.
+        let asked = &first["result"]["inputRequests"][0];
+        assert_eq!(asked["kind"], "approval");
+        assert_eq!(asked["literal"], "deploy 4.2 to production");
+        assert_eq!(asked["risk"], "high");
+
+        let state = first["result"]["requestState"].clone();
+        let second = gated_call(json!({
+            "name": "deploy",
+            "arguments": {"version": "4.2"},
+            "requestState": state,
+            "inputResponses": [true],
+        }));
+        assert_eq!(second["result"]["isError"], false);
+        assert_eq!(second["result"]["content"][0]["text"], "deployed 4.2");
+    }
+
+    /// A refusal on the retry is a refusal, not a second prompt.
+    #[test]
+    fn a_declined_approval_denies_the_call() {
+        let denied = gated_call(json!({
+            "name": "deploy",
+            "arguments": {"version": "4.2"},
+            "requestState": {"token": "deploy-pending"},
+            "inputResponses": [false],
+        }));
+        assert_eq!(denied["result"]["isError"], true);
+        assert!(denied["result"]["content"][0]["text"].as_str().unwrap().contains("declined"));
+    }
+
+    /// An absent answer is not a yes. A retry that carries no responses must be treated as a first
+    /// attempt and ask again, rather than proceeding on silence.
+    #[test]
+    fn a_retry_without_answers_asks_again_rather_than_assuming_approval() {
+        let again = gated_call(json!({
+            "name": "deploy",
+            "arguments": {"version": "4.2"},
+            "requestState": {"token": "deploy-pending"},
+        }));
+        assert_eq!(again["result"]["resultType"], "input_required");
     }
 
     fn request(id: u64, method: &str, params: Value) -> Value {

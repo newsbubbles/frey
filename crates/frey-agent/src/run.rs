@@ -306,12 +306,12 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             for (index, call) in calls.into_iter().enumerate() {
                 let over_cap =
                     u32::try_from(index).unwrap_or(u32::MAX) >= self.max_tool_calls_per_turn;
-                let cx = ToolCx {
-                    run: journal.run.clone(),
-                    session: self.session.clone(),
-                    grants: frey_core::capability::GrantSet::empty(),
-                    provenance: frey_core::taint::Provenance::new(format!("tool:{}", call.name)),
-                };
+                let cx = ToolCx::new(
+                    journal.run.clone(),
+                    self.session.clone(),
+                    frey_core::capability::GrantSet::empty(),
+                    frey_core::taint::Provenance::new(format!("tool:{}", call.name)),
+                );
                 let invocation = Invocation {
                     id: call.id.clone(),
                     name: call.name.clone(),

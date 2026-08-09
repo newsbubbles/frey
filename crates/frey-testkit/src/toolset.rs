@@ -241,6 +241,7 @@ mod tests {
             session: SessionId::new("s"),
             grants: GrantSet::empty(),
             provenance: Provenance::new("tool:fake"),
+            resume: None,
         }
     }
 

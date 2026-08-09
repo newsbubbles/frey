@@ -287,6 +287,7 @@ mod tests {
             session: SessionId::new("s"),
             grants,
             provenance: Provenance::new("tool:t"),
+            resume: None,
         }
     }
 

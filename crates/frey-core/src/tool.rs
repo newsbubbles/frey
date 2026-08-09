@@ -92,6 +92,32 @@ pub struct ToolCx {
     pub grants: GrantSet,
     /// Where results from this tool should say they came from.
     pub provenance: Provenance,
+    /// Answers to a previous [`ToolOutcome::NeedsInput`], when this call is a retry.
+    ///
+    /// The multi round-trip pattern replaced server-initiated requests in MCP `2026-07-28`, and it
+    /// is what makes a stateless server possible: rather than calling back to the client, a tool
+    /// returns what it needs, and the client **re-sends the original call** with the answers
+    /// attached. Nothing was remembered in between, so the answers have to arrive here.
+    ///
+    /// `None` means this is a first attempt. A tool that returns `NeedsInput` and is then called
+    /// again with `None` should return `NeedsInput` again rather than assuming approval — an
+    /// absent answer is not a yes.
+    ///
+    /// Shaped as a raw value rather than a typed enum because the payload is defined by whatever
+    /// asked for it, and A2A, AG-UI and MCP each spell their answers differently.
+    pub resume: Option<Resume>,
+}
+
+/// Answers carried by a retry, plus the state the tool sealed for itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resume {
+    /// What the tool sealed on the way out, returned untouched.
+    ///
+    /// Opaque to the client by contract. A client that edits it is forging the tool's own memory,
+    /// which is precisely the attack a stateless resume token has to survive.
+    pub state: serde_json::Value,
+    /// The answers, in the order the requests were made.
+    pub answers: Vec<serde_json::Value>,
 }
 
 impl ToolCx {
@@ -99,6 +125,22 @@ impl ToolCx {
     #[must_use]
     pub fn permits(&self, capability: &crate::capability::Capability) -> bool {
         self.grants.permits(capability)
+    }
+
+    /// A context for a first attempt, with no resume payload.
+    ///
+    /// Exists so that adding a field here does not break every construction site, and so the common
+    /// case reads as what it is.
+    #[must_use]
+    pub fn new(run: RunId, session: SessionId, grants: GrantSet, provenance: Provenance) -> Self {
+        Self { run, session, grants, provenance, resume: None }
+    }
+
+    /// The same context, carrying answers to an earlier request for input.
+    #[must_use]
+    pub fn resuming(mut self, resume: Resume) -> Self {
+        self.resume = Some(resume);
+        self
     }
 }
 
@@ -292,6 +334,7 @@ mod tests {
                 PathScope::new(["./src"]).unwrap(),
             ))]),
             provenance: Provenance::new("tool:fs_read"),
+            resume: None,
         }
     }
 
