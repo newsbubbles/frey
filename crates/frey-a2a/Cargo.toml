@@ -1,0 +1,19 @@
+[package]
+name = "frey-a2a"
+description = "Agent2Agent v1.0 support for Frey: agent cards, the task lifecycle, and streaming semantics."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+frey-core = { path = "../frey-core", version = "0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

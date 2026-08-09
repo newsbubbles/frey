@@ -218,6 +218,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frey-a2a"
+version = "0.0.0"
+dependencies = [
+ "frey-core",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror",
+]
+
+[[package]]
 name = "frey-agent"
 version = "0.0.0"
 dependencies = [

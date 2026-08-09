@@ -19,9 +19,9 @@ Running log against [BUILD-PLAN.md](BUILD-PLAN.md). Updated as each milestone la
 | M12 built-in tools | ✅ done | argv-only shell, egress allowlist, workspace paths |
 | M13 skills | ✅ done | ladder, trust boundary, no self-granted capabilities |
 | M14 code mode | ⚠️ partial | codegen + bindings + delegation; embedded engine deferred |
-| M15 multi-agent | ⏳ in progress | |
-| M16 A2A | ⬜ | |
-| M17 harness | ⬜ | |
+| M15 multi-agent | ✅ done | grant monotonicity, backpressure rule |
+| M16 A2A | ✅ done | agent cards, 8-state lifecycle, stream rules |
+| M17 harness | ⏳ in progress | |
 | M18 CLI | ⬜ | |
 | M19 release | ⬜ | |
 
@@ -195,3 +195,31 @@ because it doubles as the description corpus tool search indexes. Pulling a Java
 every build of a Rust agent framework is a cost every user pays for a feature most will delegate, so
 it belongs behind a feature flag. That is a scope reduction against the plan, and it is recorded
 here rather than quietly absorbed.
+
+## M15–M16 — many agents
+
+The multi-agent module is mostly about saying no. No graph DSL, no supervisor tree, no swarm
+metaphor — those are where claims stop being falsifiable. What ships is one invariant and the
+plumbing around it.
+
+**Capabilities only narrow.** A child's grants are always a subset of its parent's, checked at spawn
+rather than at use, because by the time a capability is exercised the decision has been made. A
+descendant of an empty grant set can acquire nothing however deep in the tree it sits, and there is
+a test at depth to say so. Untrusted input also flows downward: a parent that has read a fetched
+page cannot hand a child a clean slate by summarising, since the summary derives from that page.
+
+The backpressure rule has one place in the codebase: presentation deltas may be dropped, semantic
+events may not — even when honouring that means exceeding the soft capacity. Going over budget is
+recoverable; a transcript that lies is not. Dropped deltas are counted, so "the UI looked laggy" is
+diagnosable from a number.
+
+A2A confirmed ADR-0010 rather than testing it. Its `INPUT_REQUIRED` and `AUTH_REQUIRED` are
+*interrupted, non-terminal* states, exactly MCP's multi round-trip result and AG-UI's interrupt, and
+projecting one onto the other took a dozen lines. Had A2A been added after the loop was built around
+a different shape, that would have surfaced far too late to be cheap.
+
+One point worth stating plainly: **a verified signature on an agent card does not make its text
+trustworthy.** Verification changes who is responsible for the text, not whether it can be obeyed.
+The test that pins this uses a signed card carrying an injected instruction, and asserts the text
+arrives indexed and low-integrity. An *invalid* signature is refused outright — worse than unsigned,
+because someone tried.
