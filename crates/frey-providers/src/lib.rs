@@ -27,6 +27,10 @@ pub mod dialect;
 pub mod openai;
 pub mod openrouter;
 pub mod sse;
+// Used by the HTTP provider's SSE stream and by agent-CLI delegation. Gated on both, because with
+// neither feature on it is dead code — and this crate denies warnings, so dead code is a build
+// failure rather than a nuisance.
+#[cfg(any(feature = "http", feature = "agent-cli"))]
 pub(crate) mod streaming;
 
 #[cfg(feature = "http")]

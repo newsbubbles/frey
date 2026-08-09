@@ -46,9 +46,12 @@ jobs:
       # The optional features have to build alone as well as together: someone will turn off
       # exactly the one we never tested without.
       - run: cargo check -p frey --no-default-features
+      - run: cargo check -p frey --no-default-features --features http
       - run: cargo check -p frey --no-default-features --features mcp
       - run: cargo check -p frey --no-default-features --features sandbox
       - run: cargo check -p frey --no-default-features --features a2a
+      - run: cargo check -p frey --no-default-features --features harness
+      - run: cargo check -p frey --no-default-features --features agent-cli
       - run: cargo check -p frey --features full
 
   examples:
