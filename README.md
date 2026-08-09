@@ -214,6 +214,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+**[Documentation is in `docs/`](docs/README.md)** — getting started, providers, tools, MCP, the
+caching model, the security model, and how to test an agent without spending money.
+
 The design record lives in [`notes/`](notes/README.md): the research it is based on, the
 architecture, eighteen ADRs with the reasoning behind each decision, and
 [`notes/PROGRESS.md`](notes/PROGRESS.md), which records what each milestone found — including the
