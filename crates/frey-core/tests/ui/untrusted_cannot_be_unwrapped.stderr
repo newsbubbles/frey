@@ -1,8 +1,0 @@
-error[E0599]: no method named `into_inner` found for struct `Tainted<String>` in the current scope
- --> tests/ui/untrusted_cannot_be_unwrapped.rs:8:29
-  |
-8 |     let _raw: String = page.into_inner();
-  |                             ^^^^^^^^^^ method not found in `Tainted<String>`
-  |
-  = note: the method was found for
-          - `Tainted<T, frey_core::taint::High>`

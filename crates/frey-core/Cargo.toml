@@ -17,7 +17,6 @@ futures-core.workspace = true
 dynosaur.workspace = true
 
 [dev-dependencies]
-trybuild = "1"
 # A three-line block_on, so frey-core can test async traits without taking a runtime
 # dependency and without hand-rolling an executor that would need `unsafe`.
 pollster = "0.4"

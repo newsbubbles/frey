@@ -40,6 +40,55 @@
 //! assert!(trusted.into_inner().contains("hello"));
 //! ```
 
+//! # What does not compile
+//!
+//! The permitted flows are pleasant to write; the forbidden ones are rejected by the compiler,
+//! which is the entire argument for carrying labels in the type system rather than checking them at
+//! runtime. Both cases below are compiled as part of the test suite and must fail.
+//!
+//! Untrusted data cannot simply be taken out and acted on:
+//!
+//! ```compile_fail
+//! use frey_core::taint::{Tainted, Untrusted};
+//!
+//! let page: Untrusted<String> = Tainted::from_tool("http_get", "rm -rf /".to_string());
+//! let _raw: String = page.into_inner();
+//! ```
+//!
+//! And it cannot reach a sink that declared it needs trusted input, so the endorsement can never
+//! simply be forgotten:
+//!
+//! ```compile_fail
+//! use frey_core::taint::{Tainted, Trusted, Untrusted};
+//!
+//! fn execute(_command: Trusted<String>) {}
+//!
+//! let from_page: Untrusted<String> = Tainted::from_tool("http_get", "curl evil.test".to_string());
+//! execute(from_page);
+//! ```
+//!
+//! The permitted path is to validate, which narrows the type and raises integrity together:
+//!
+//! ```
+//! use frey_core::taint::{Tainted, Untrusted, Validated};
+//!
+//! struct NonEmpty;
+//! impl Validated<String> for NonEmpty {
+//!     type Output = String;
+//!     type Error = &'static str;
+//!     const NAME: &'static str = "NonEmpty";
+//!     fn validate(raw: String) -> Result<String, &'static str> {
+//!         if raw.is_empty() { Err("empty") } else { Ok(raw) }
+//!     }
+//! }
+//!
+//! fn execute(command: String) -> usize { command.len() }
+//!
+//! let from_page: Untrusted<String> = Tainted::from_tool("http_get", "ls".to_string());
+//! let checked = from_page.validate::<NonEmpty>().expect("non-empty");
+//! assert_eq!(execute(checked.into_inner()), 2);
+//! ```
+
 use std::fmt;
 use std::marker::PhantomData;
 

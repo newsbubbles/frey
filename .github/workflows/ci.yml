@@ -34,12 +34,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # trybuild's expected output is compiler-version sensitive, so the UI suite runs on one
-      # platform rather than failing three ways for the same reason.
       - run: cargo test --workspace
-        if: matrix.os == 'ubuntu-latest'
-      - run: cargo test --workspace -- --skip forbidden_flows_do_not_compile
-        if: matrix.os != 'ubuntu-latest'
 
   features:
     name: feature combinations

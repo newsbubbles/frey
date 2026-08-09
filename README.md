@@ -63,6 +63,9 @@ agent's reply — is `Tainted`. Passing it somewhere that needs trusted input do
 expected `Tainted<String, High>`, found `Tainted<String, Low>`
 ```
 
+Those forbidden flows are `compile_fail` doctests, so the compiler proves them on every platform
+rather than a snapshot of diagnostic text pinning them to one.
+
 Raising integrity happens in one auditable place, records its call site, and is usually done by a
 parser rather than a human — narrowing a type *is* the check. An auditor asking "where does
 untrusted data become trusted?" gets `grep endorse` plus a log with file and line, rather than a
@@ -189,12 +192,6 @@ cargo test --workspace
 
 ```bash
 cargo clippy --workspace --all-targets -- -D warnings
-```
-
-Regenerate the compile-fail expectations after a toolchain upgrade:
-
-```bash
-TRYBUILD=overwrite cargo test -p frey-core --test ui
 ```
 
 The design record lives in [`notes/`](notes/README.md): the research it is based on, the
