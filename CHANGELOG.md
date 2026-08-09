@@ -5,6 +5,24 @@ All notable changes to Frey are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the caveat that `0.x` makes no
 stability promise, and this one means it.
 
+## [0.1.1] — 2026-08-09
+
+`0.1.0` was tagged before its first public CI run, which then failed on three things worth fixing
+rather than hiding. The tag is left where it is; this is the first release with a green build.
+
+### Fixed
+
+- **Compile-fail tests no longer pin diagnostic text.** The `trybuild` suite asserted the exact
+  rustc wording, and those expectations were generated on Windows, so the suite failed on Linux for
+  a reason unrelated to what it tested. Replaced with `compile_fail` doctests, which assert the same
+  property and let the compiler phrase the refusal. The CI workaround that skipped the test on two
+  of three platforms is gone with it — a test worth running is worth running everywhere.
+- **A clippy lint** that a newer toolchain catches and 1.94.1 does not. Fixed rather than allowed.
+- **No wildcard dependencies.** Path dev-dependencies without a version resolve as `*`, and a crate
+  intending to be published cannot depend on any version of anything.
+- **`CDLA-Permissive-2.0` added to the licence allowlist**, deliberately and with a note: it arrives
+  with the Mozilla CA bundle that rustls ships.
+
 ## [0.1.0] — 2026-08-09
 
 First release. Complete against the build plan in `notes/BUILD-PLAN.md`, with two scope reductions

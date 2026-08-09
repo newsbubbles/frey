@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-frey-core = { path = "../frey-core", version = "0.1.0" }
+frey-core = { path = "../frey-core", version = "0.1.1" }
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -27,7 +27,7 @@ http = ["dep:reqwest", "dep:tokio", "dep:bytes"]
 
 [dev-dependencies]
 pollster = "0.4"
-frey-testkit = { path = "../frey-testkit", version = "0.1.0" }
+frey-testkit = { path = "../frey-testkit", version = "0.1.1" }
 
 [lints]
 workspace = true
