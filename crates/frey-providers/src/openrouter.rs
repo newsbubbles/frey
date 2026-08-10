@@ -138,7 +138,19 @@ fn encode_chat(request: &Request, stream: bool) -> Value {
                 Item::ToolCall(c) => tool_calls.push(json!({
                     "id": c.id.as_str(),
                     "type": "function",
-                    "function": {"name": c.name.as_str(), "arguments": c.args.to_string()},
+                    "function": {
+                        "name": c.name.as_str(),
+                        // Never `null`. Chat Completions wants a JSON *object* encoded as a
+                        // string, and some upstreams validate it: Alibaba answers HTTP 400
+                        // "the function.arguments parameter must be in JSON format" and the whole
+                        // run dies. A call with no arguments has no arguments; it does not have
+                        // null ones.
+                        "arguments": if c.args.is_null() {
+                            "{}".to_string()
+                        } else {
+                            c.args.to_string()
+                        },
+                    },
                 })),
                 Item::ToolResult(r) => messages.push(json!({
                     "role": "tool",
@@ -262,12 +274,17 @@ fn decode_chat(
                         .and_then(Value::as_str)
                         .unwrap_or_default(),
                 ),
+                // An empty object rather than `Value::Null` when the arguments are absent or
+                // unparseable. Null loses on the way back out — it re-encodes as the string
+                // "null", which is not an object, and providers that check reject the next
+                // request outright. It is also the better input to schema validation: `{}` fails
+                // with "`domain` is missing", which a model can act on, and `null` does not.
                 args: call
                     .get("function")
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or(Value::Null),
+                    .unwrap_or_else(|| json!({})),
                 caller: Caller::Direct,
             }));
         }
@@ -452,6 +469,54 @@ mod tests {
         let items = OpenRouter.decode(&body).unwrap().items;
         assert!(matches!(items[0], Item::Reasoning(_)), "{items:?}");
         assert!(matches!(items[1], Item::Text(_)), "{items:?}");
+    }
+
+    /// A tool call with no arguments must not come back out as `null`.
+    ///
+    /// The round trip is what breaks: a model emits a call with absent or unparseable arguments,
+    /// decode turned that into `Value::Null`, and the next request re-encoded it as the *string*
+    /// `"null"`. Chat Completions wants a JSON object there, and upstreams that check say so —
+    /// Alibaba answers HTTP 400 "the function.arguments parameter of the code model must be in
+    /// JSON format" and every remaining turn of the run fails the same way. Found on
+    /// `qwen/qwen3.7-flash`, where it disqualified the model for something frey did.
+    #[test]
+    fn a_tool_call_without_arguments_round_trips_as_an_object() {
+        let body = json!({
+            "id": "gen-1",
+            "model": "m",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "money_balance", "arguments": ""}
+                    }]
+                }
+            }]
+        });
+
+        let items = OpenRouter.decode(&body).unwrap().items;
+        let Item::ToolCall(call) = &items[0] else { panic!("{items:?}") };
+        assert_eq!(call.args, json!({}), "absent arguments are an empty object, not null");
+
+        // And back out again, which is where it used to become the string "null".
+        let request = Request {
+            model: ModelId::new("m"),
+            turns: vec![Turn::new(Role::Assistant, items.clone())],
+            max_output: 64,
+            ..Request::default()
+        };
+        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let arguments = encoded["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments are a string on the wire");
+        assert_eq!(arguments, "{}");
+        assert!(
+            serde_json::from_str::<Value>(arguments).unwrap().is_object(),
+            "whatever we send must parse as an object"
+        );
     }
 
     #[test]
