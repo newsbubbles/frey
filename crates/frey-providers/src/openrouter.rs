@@ -68,6 +68,19 @@ impl Dialect for OpenRouter {
             cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false },
             reasoning: ReasoningSupport::Plain,
             strict_schema: StrictSupport::None,
+            // An assumption the router cannot verify, and it is stated as one. Most models behind
+            // OpenRouter do support parallel calls, so `true` is the useful default and flipping it
+            // wholesale would cost every well-behaved model an extra round trip per call — which is
+            // the throughput metric that matters most to anyone running at volume.
+            //
+            // But it is not knowable per model from here, and the exceptions are real:
+            // `meta-llama/llama-3.1-8b-instruct` answers HTTP 400 "only supports single tool-calls
+            // at once" before generating anything. Frey does not ship a per-model table for this,
+            // because a hardcoded list of upstream quirks rots faster than the release cycle.
+            //
+            // For a known exception, correct it per request rather than globally:
+            // `Agent::extra("parallel_tool_calls", false)`, or the same key on `Request::extra`.
+            // `extra` is merged last precisely so a caller can win this argument.
             parallel_tool_calls: true,
             input_modalities: vec![Modality::Text, Modality::Image],
             output_modalities: vec![Modality::Text],
@@ -78,7 +91,7 @@ impl Dialect for OpenRouter {
     }
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
-        let mut body = encode_chat(request, stream);
+        let mut body = encode_chat(request, stream, self.capabilities(&request.model));
         // Cost is opt-in on the wire. Without this the response carries token counts and no `cost`
         // field at all, so `reports_cost: true` above is a promise the adapter breaks silently:
         // every ledger entry reads as "the provider did not say" and the one thing OpenRouter is
@@ -112,7 +125,7 @@ impl Dialect for OpenAiChat {
     }
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
-        Ok(encode_chat(request, stream))
+        Ok(encode_chat(request, stream, self.capabilities(&request.model)))
     }
 
     fn decode(&self, body: &Value) -> Result<Response, ProviderError> {
@@ -120,7 +133,7 @@ impl Dialect for OpenAiChat {
     }
 }
 
-fn encode_chat(request: &Request, stream: bool) -> Value {
+fn encode_chat(request: &Request, stream: bool, caps: ProviderCapabilities) -> Value {
     let mut messages = Vec::new();
 
     for turn in &request.turns {
@@ -200,6 +213,17 @@ fn encode_chat(request: &Request, stream: bool) -> Value {
     if stream {
         body["stream"] = Value::Bool(true);
     }
+    // Sent only when the capability says the model cannot do it, and only when there are tools for
+    // it to apply to. Absent means the provider's own default, which is what a parallel-capable
+    // model wants; sending `true` to an upstream that does not support parallel calls is another
+    // way to earn a 400, so the flag is a restriction rather than a request.
+    //
+    // Before this, `parallel_tool_calls` was declared in `capabilities()` and never sent in either
+    // direction — the same shape as claiming to report cost and never asking for it.
+    if !caps.parallel_tool_calls && !request.tools.is_empty() {
+        body["parallel_tool_calls"] = Value::Bool(false);
+    }
+    // Last, so a caller can override anything above it for one model without waiting on Frey.
     for (key, value) in &request.extra {
         body[key.as_str()] = value.clone();
     }
@@ -568,6 +592,73 @@ mod tests {
         };
         let encoded = OpenRouter.encode(&request, false).unwrap();
         assert_eq!(encoded["tools"][0]["function"]["name"], json!("fs_read"));
+    }
+
+    use frey_core::tool_def::{JsonSchema, ToolDefinition};
+
+    /// A capability nothing sends is a claim nothing keeps. `parallel_tool_calls` was declared for
+    /// every model and never appeared on the wire in either direction — the same shape as claiming
+    /// to report cost and never asking for it.
+    ///
+    /// It is sent only as a *restriction*. Absent means the provider's own default, which is what a
+    /// parallel-capable model wants; sending `true` to an upstream that cannot do it is another way
+    /// to earn a 400.
+    #[test]
+    fn a_model_that_cannot_do_parallel_calls_is_told_not_to() {
+        let single = OpenAiChat {
+            id: ProviderId::new("groq"),
+            capabilities: Some(ProviderCapabilities {
+                parallel_tool_calls: false,
+                ..ProviderCapabilities::minimal(8_192, 1_024)
+            }),
+        };
+        let request = Request {
+            model: ModelId::new("meta-llama/llama-3.1-8b-instruct"),
+            tools: vec![ToolDefinition::new(
+                "fs_read",
+                "Read a file described well enough to be found by a search",
+                JsonSchema::empty_object(),
+            )],
+            max_output: 100,
+            ..Request::default()
+        };
+
+        assert_eq!(single.encode(&request, false).unwrap()["parallel_tool_calls"], json!(false));
+    }
+
+    /// And is silent for a model that can, so the majority does not lose a round trip per call to
+    /// accommodate the exceptions.
+    #[test]
+    fn a_parallel_capable_model_is_not_restricted() {
+        let request = Request {
+            model: ModelId::new("qwen/qwen3-30b-a3b-instruct-2507"),
+            tools: vec![ToolDefinition::new(
+                "fs_read",
+                "Read a file described well enough to be found by a search",
+                JsonSchema::empty_object(),
+            )],
+            max_output: 100,
+            ..Request::default()
+        };
+        let body = OpenRouter.encode(&request, false).unwrap();
+        assert!(body.get("parallel_tool_calls").is_none(), "absent means the provider default");
+    }
+
+    /// `extra` is merged last on purpose: a caller correcting one model must win over anything the
+    /// adapter decided, without waiting for Frey to learn about that model.
+    #[test]
+    fn extra_overrides_what_the_adapter_chose() {
+        let mut request = Request {
+            model: ModelId::new("meta-llama/llama-3.1-8b-instruct"),
+            max_output: 100,
+            ..Request::default()
+        };
+        request.extra.insert("parallel_tool_calls".into(), json!(false));
+        request.extra.insert("session_id".into(), json!("mine"));
+
+        let body = OpenRouter.encode(&request, false).unwrap();
+        assert_eq!(body["parallel_tool_calls"], json!(false));
+        assert_eq!(body["session_id"], json!("mine"), "the caller's value, not the adapter's");
     }
 
     #[test]

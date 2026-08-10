@@ -79,9 +79,32 @@ pub struct RunOutput {
     pub journal: Journal,
     /// Diagnostics worth surfacing.
     pub warnings: Vec<Warning>,
+    /// Why the final turn stopped.
+    ///
+    /// The difference between an answer and *most* of an answer. A run whose last turn hit the
+    /// output cap returns `Ok` with real content, because throwing that away would be worse — but
+    /// it is not a finished answer, and a caller has to be able to tell without reading prose.
+    /// See [`is_complete`](Self::is_complete).
+    pub stop: StopReason,
 }
 
 impl RunOutput {
+    /// Whether the run reached a natural end rather than a limit.
+    ///
+    /// `false` means the final turn was cut off — the model hit its output cap mid-sentence, and
+    /// [`text`](Self::text) is a prefix of what it meant to say. Common rather than exotic with
+    /// reasoning models, which can spend the whole budget thinking before they write anything.
+    ///
+    /// This exists because the alternative was asking callers to scan `warnings` for a
+    /// [`Warning::Degraded`] with a particular string in it. Frey's rule is that nothing degrades
+    /// quietly, and a diagnostic you have to grep for is quiet enough — the same reasoning that
+    /// makes `cost` an `Option` rather than a zero, and `UsageTotals::is_complete` a method rather
+    /// than a comment.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.stop.is_truncated()
+    }
+
     /// The assistant's text, concatenated.
     #[must_use]
     pub fn text(&self) -> String {
@@ -120,6 +143,7 @@ pub struct Agent<P, T> {
     max_tool_calls_per_turn: u32,
     session: SessionId,
     cache_key: Option<smol_str::SmolStr>,
+    extra: std::collections::BTreeMap<smol_str::SmolStr, serde_json::Value>,
 }
 
 impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
@@ -134,6 +158,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             max_tool_calls_per_turn: DEFAULT_MAX_TOOL_CALLS_PER_TURN,
             session: SessionId::new("default"),
             cache_key: None,
+            extra: std::collections::BTreeMap::new(),
         }
     }
 
@@ -206,6 +231,40 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
         self
     }
 
+    /// Add a provider-specific field to every request this agent makes.
+    ///
+    /// `Request::extra` has always been merged last by every adapter, so it overrides anything Frey
+    /// sets — but nothing exposed it at the agent level, which meant the escape hatch existed and
+    /// could not be reached from the only constructor most callers use.
+    ///
+    /// It is the answer to "this one model needs a flag Frey does not know about", and that case is
+    /// not rare on a router fronting hundreds of upstreams. The concrete one:
+    /// `meta-llama/llama-3.1-8b-instruct` rejects any request carrying tools unless parallel calls
+    /// are disabled, which Frey cannot know per model and will not hardcode.
+    ///
+    /// ```
+    /// # use frey_agent::run::Agent;
+    /// # fn demo<P: frey_core::provider::ModelProvider, T: frey_agent::run::ToolHost>(
+    /// #     provider: P, tools: T,
+    /// # ) -> Agent<P, T> {
+    /// Agent::new(provider, tools, "meta-llama/llama-3.1-8b-instruct")
+    ///     .extra("parallel_tool_calls", false)
+    /// # }
+    /// ```
+    ///
+    /// Nothing validates the key against the provider: this is a passthrough, so a typo reaches the
+    /// wire and the provider's own error comes back. That is the intended failure — an allowlist
+    /// here would just be another table to keep current.
+    #[must_use]
+    pub fn extra(
+        mut self,
+        key: impl Into<smol_str::SmolStr>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+
     /// Run `task` to completion.
     ///
     /// # Errors
@@ -270,6 +329,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 cache_key: Some(
                     self.cache_key.clone().unwrap_or_else(|| self.session.as_str().into()),
                 ),
+                extra: self.extra.clone(),
                 ..Request::default()
             };
 
@@ -331,6 +391,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     totals,
                     journal,
                     warnings,
+                    stop: response.stop,
                 });
             }
 
@@ -428,7 +489,10 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     SeqId(turn_index),
                     match &outcome {
                         ToolOutcome::Failed(error) | ToolOutcome::Denied(error) => {
-                            EventKind::ToolCallFailed { call: call.id.clone(), error: error.clone() }
+                            EventKind::ToolCallFailed {
+                                call: call.id.clone(),
+                                error: error.clone(),
+                            }
                         }
                         _ => EventKind::ToolCallFinished {
                             call: call.id.clone(),
@@ -470,12 +534,7 @@ fn preview(args: &serde_json::Value) -> String {
     }
     // On a character boundary, because arguments are arbitrary text and slicing mid-codepoint
     // panics — in the transcript path, which is the last place a run should die.
-    let cut = rendered
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|i| *i <= MAX)
-        .last()
-        .unwrap_or(0);
+    let cut = rendered.char_indices().map(|(i, _)| i).take_while(|i| *i <= MAX).last().unwrap_or(0);
     format!("{}…", &rendered[..cut])
 }
 
@@ -804,6 +863,50 @@ mod tests {
             .collect();
 
         assert_eq!(keys[0], keys[1], "a shared prefix must present a shared key");
+    }
+
+    /// The escape hatch has to be reachable from the constructor callers actually use. `extra` was
+    /// merged by every adapter and exposed by nothing, which is an escape hatch behind a locked
+    /// door.
+    #[test]
+    fn provider_specific_fields_reach_the_request() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "meta-llama/llama-3.1-8b-instruct")
+            .extra("parallel_tool_calls", false);
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().extra.get("parallel_tool_calls"), Some(&serde_json::json!(false)));
+    }
+
+    /// An answer cut off at the output cap is returned rather than discarded — the content is real
+    /// and throwing it away would be worse — but it is not a finished answer, and the caller can
+    /// tell from a value instead of from prose in `warnings`.
+    #[test]
+    fn a_truncated_answer_does_not_claim_to_be_complete() {
+        let model = ScriptedModel::new(vec![Scripted::truncated("The three steps are: first, ")]);
+        let out = pollster::block_on(
+            Agent::new(model, tools(&[]), "test-model").run("explain the process"),
+        )
+        .unwrap();
+
+        assert!(!out.is_complete(), "the model hit its cap mid-sentence");
+        assert_eq!(out.stop, StopReason::MaxTokens);
+        assert!(!out.text().is_empty(), "and the partial answer is still returned");
+        assert!(
+            out.warnings.iter().any(|w| matches!(w, Warning::Degraded { .. })),
+            "the warning stays too; the field is for telling, the warning is for reading"
+        );
+    }
+
+    /// The ordinary case has to stay ordinary, or the flag is just noise.
+    #[test]
+    fn a_finished_answer_says_it_is_complete() {
+        let model = ScriptedModel::replying("done");
+        let out =
+            pollster::block_on(Agent::new(model, tools(&[]), "test-model").run("go")).unwrap();
+
+        assert!(out.is_complete());
+        assert_eq!(out.stop, StopReason::EndTurn);
     }
 
     /// The default has to be high enough that ordinary parallel fan-out is untouched. A model that

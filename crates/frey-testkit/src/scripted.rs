@@ -48,6 +48,21 @@ impl Turn {
         Self::Reply { items, stop: StopReason::ToolUse, usage: Usage::default() }
     }
 
+    /// A reply cut off at the output cap: real content, `StopReason::MaxTokens`, no end of turn.
+    ///
+    /// Worth having as its own constructor because it is the shape most likely to be tested by
+    /// accident and least likely to be tested on purpose. It is also common rather than exotic —
+    /// a reasoning model can spend its entire output budget thinking and return a partial answer
+    /// or none at all — and until this existed the testkit could not produce it, which is part of
+    /// why a run that ended truncated was reported to callers as a run that had finished.
+    pub fn truncated(text: impl Into<String>) -> Self {
+        Self::Reply {
+            items: vec![Item::text(text)],
+            stop: StopReason::MaxTokens,
+            usage: Usage::default(),
+        }
+    }
+
     /// Attach usage to a reply. Ignored for failures.
     #[must_use]
     pub fn with_usage(mut self, u: Usage) -> Self {
