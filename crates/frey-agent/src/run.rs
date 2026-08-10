@@ -112,6 +112,7 @@ pub struct Agent<P, T> {
     max_turns: u32,
     max_tool_calls_per_turn: u32,
     session: SessionId,
+    cache_key: Option<smol_str::SmolStr>,
 }
 
 impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
@@ -125,6 +126,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             max_turns: 24,
             max_tool_calls_per_turn: DEFAULT_MAX_TOOL_CALLS_PER_TURN,
             session: SessionId::new("default"),
+            cache_key: None,
         }
     }
 
@@ -162,6 +164,38 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
     #[must_use]
     pub fn session(mut self, session: SessionId) -> Self {
         self.session = session;
+        self
+    }
+
+    /// Override the routing-affinity key, which otherwise defaults to the session id.
+    ///
+    /// Providers that route across upstreams use this to send related requests to the same one, so
+    /// they hit the same warm prompt cache: OpenRouter as `session_id`, OpenAI as
+    /// `prompt_cache_key`. Anthropic does not use it — its caching is by explicit breakpoint over an
+    /// exact prefix, with no routing decision to influence.
+    ///
+    /// **The session id is the right default and the wrong one for a specific, common shape.** One
+    /// long conversation shares a session and therefore shares a prefix, so keying by session is
+    /// exactly right. But a fleet of *short* sessions that share a stable prefix — the same persona
+    /// or system prompt run thousands of times — gets a distinct key per session, which scatters
+    /// them across upstreams and misses the cache the prefix was built to hit. OpenAI's key needs
+    /// sustained traffic to stay warm at all, which no single short session produces.
+    ///
+    /// For that shape, key by whatever the *prefix* belongs to rather than by the run:
+    ///
+    /// ```
+    /// # use frey_agent::run::Agent;
+    /// # fn demo<P: frey_core::provider::ModelProvider, T: frey_agent::run::ToolHost>(
+    /// #     provider: P, tools: T,
+    /// # ) -> Agent<P, T> {
+    /// Agent::new(provider, tools, "some-model")
+    ///     .system("…a persona shared by every session this agent runs…")
+    ///     .cache_key("persona:ada")
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn cache_key(mut self, key: impl Into<smol_str::SmolStr>) -> Self {
+        self.cache_key = Some(key.into());
         self
     }
 
@@ -223,7 +257,12 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 tools: definitions.clone(),
                 marks: plan.marks.clone(),
                 max_output: caps.max_output.min(budget.reserve_output),
-                cache_key: Some(self.session.as_str().into()),
+                // The session id unless the caller named something else. See `Agent::cache_key`:
+                // the default is right for one long conversation and wrong for many short ones
+                // sharing a prefix, and only the caller knows which they are.
+                cache_key: Some(
+                    self.cache_key.clone().unwrap_or_else(|| self.session.as_str().into()),
+                ),
                 ..Request::default()
             };
 
@@ -341,7 +380,12 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                                 ToolErrorKind::NotFound,
                                 format!("there is no tool called `{}`", call.name),
                             )
-                            .guide("Use one of the tools that were listed, or search for one."),
+                            // Points only at the list already in the prompt. The earlier wording added
+                            // "or search for one", which named an affordance this loop does not
+                            // provide — tool search lives in `frey-context` and nothing here consults
+                            // it. Guidance that sends a model after a tool that does not exist is this
+                            // project's own errors-point-forward principle pointed backwards.
+                            .guide("Use one of the tools that were listed."),
                         ),
                         // Policy is consulted before the arguments are checked, and the order is not
                         // cosmetic. Telling a model that its arguments to a forbidden tool are
@@ -605,6 +649,51 @@ mod tests {
         assert!(shown.contains("Ask for fewer tools"), "and what to do about it: {shown}");
     }
 
+    /// Routing affinity defaults to the session id, which is right for one long conversation:
+    /// everything in it shares a prefix, so everything in it should reach the same warm cache.
+    #[test]
+    fn routing_affinity_defaults_to_the_session() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+            .session(SessionId::new("session-42"));
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().cache_key.as_deref(), Some("session-42"));
+    }
+
+    /// And is overridable, because the default is wrong for the opposite shape: many short sessions
+    /// sharing one stable prefix get a distinct key each, which scatters them across upstreams and
+    /// misses the cache the prefix exists to hit. Only the caller knows which shape they are.
+    #[test]
+    fn routing_affinity_can_be_keyed_to_the_prefix_instead() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+            .session(SessionId::new("session-42"))
+            .cache_key("persona:ada");
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().cache_key.as_deref(), Some("persona:ada"));
+    }
+
+    /// Two runs that share a persona and nothing else must present the same key, or the override
+    /// has not bought anything. This is the property the whole setter exists for.
+    #[test]
+    fn two_sessions_sharing_a_persona_share_a_key() {
+        let keys: Vec<_> = ["session-1", "session-2"]
+            .iter()
+            .map(|session| {
+                let model = ScriptedModel::replying("done");
+                let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+                    .session(SessionId::new(*session))
+                    .cache_key("persona:ada");
+                pollster::block_on(agent.run("go")).unwrap();
+                model.last().cache_key.clone()
+            })
+            .collect();
+
+        assert_eq!(keys[0], keys[1], "a shared prefix must present a shared key");
+    }
+
     /// The default has to be high enough that ordinary parallel fan-out is untouched. A model that
     /// reads six files at once is behaving well, and a cap that punishes it would push agents
     /// toward the serial pattern that costs extra round trips.
@@ -681,7 +770,18 @@ mod tests {
             panic!("expected a tool result")
         };
         assert!(is_error);
-        assert!(content.contains("search for one"), "a bare failure just loops: {content}");
+        assert!(
+            content.contains("Use one of the tools that were listed"),
+            "a bare failure just loops: {content}"
+        );
+        // The guidance must not name an affordance this loop does not provide. Tool search lives in
+        // `frey-context` and nothing in the loop consults it, so telling a model to search for a
+        // tool sends it hunting for something that is not there — and a model that takes the advice
+        // burns a turn proving it.
+        assert!(
+            !content.contains("search"),
+            "guidance may only point at what the loop actually offers: {content}"
+        );
     }
 
     #[test]

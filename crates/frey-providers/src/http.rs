@@ -105,6 +105,32 @@ impl HttpProvider {
         })
     }
 
+    /// An adapter over a client you already have.
+    ///
+    /// Every other constructor builds its own [`reqwest::Client`], and each one carries its own
+    /// connection pool, DNS cache, and TLS session store. That is the right default for a program
+    /// with one provider and a trap for a program with thousands: constructing an adapter per agent
+    /// multiplies all of that by the population, and the symptom is socket exhaustion rather than
+    /// anything that looks like a client problem.
+    ///
+    /// `reqwest::Client` is already an `Arc` internally, so cloning one into many adapters shares
+    /// the pool rather than copying it. Note also that [`ModelProvider::complete`] takes `&self`,
+    /// so a *single* adapter behind an `Arc` serves any number of concurrent agents — reach for
+    /// that first, and for this when the agents genuinely need different dialects, endpoints, or
+    /// credentials over one pool.
+    ///
+    /// Timeouts come from the client you supply. [`Timeouts`] documents the two that matter and why
+    /// there are two; a client built without them waits forever.
+    #[must_use]
+    pub fn with_client(
+        dialect: Arc<dyn Dialect>,
+        base_url: impl Into<String>,
+        auth: Auth,
+        client: reqwest::Client,
+    ) -> Self {
+        Self { dialect, base_url: base_url.into().trim_end_matches('/').to_string(), auth, client }
+    }
+
     fn url(&self) -> String {
         format!("{}{}", self.base_url, self.dialect.path())
     }
@@ -327,6 +353,32 @@ fn stream_events(value: &serde_json::Value, dialect: &Arc<dyn Dialect>) -> Vec<S
 mod tests {
     use super::*;
     use crate::anthropic::Anthropic;
+
+    /// Many adapters, one connection pool. `reqwest::Client` is an `Arc` inside, so cloning it into
+    /// several adapters shares the pool rather than copying it — which is the whole point, because
+    /// building an adapter per agent otherwise multiplies pools, DNS caches and TLS session stores
+    /// by the population and fails as socket exhaustion rather than as anything client-shaped.
+    #[test]
+    fn adapters_can_share_one_client() {
+        let client = reqwest::Client::builder().build().expect("a client builds");
+        let auth = || Auth::Header { name: "x-api-key".into(), env: "UNSET_FOR_THIS_TEST".into() };
+
+        let first = HttpProvider::with_client(
+            Arc::new(Anthropic),
+            "https://api.anthropic.com",
+            auth(),
+            client.clone(),
+        );
+        let second = HttpProvider::with_client(
+            Arc::new(Anthropic),
+            "https://api.anthropic.com/",
+            auth(),
+            client,
+        );
+
+        assert_eq!(first.url(), second.url(), "a trailing slash is still normalised away");
+        assert_eq!(first.id(), ProviderId::new("anthropic"));
+    }
 
     #[test]
     fn fatal_failures_short_circuit_the_retry_loop() {
