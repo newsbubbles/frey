@@ -14,7 +14,7 @@ use frey_core::event::Event;
 use frey_core::ids::{RunId, SeqId};
 use frey_core::item::Item;
 use frey_core::provider::{Response, StopReason};
-use frey_core::usage::Usage;
+use frey_core::usage::{Usage, UsageTotals};
 use smol_str::SmolStr;
 
 /// One recorded non-deterministic effect.
@@ -134,6 +134,27 @@ impl Journal {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// What the run consumed, recomputed from the record.
+    ///
+    /// The journal is the session, so this is derivable rather than something to carry alongside —
+    /// and it is the only way to price a run that ended in a way that has no [`RunOutput`]. A
+    /// looping agent still spent money, and a turn limit that reports no cost is how a runaway
+    /// becomes invisible in the ledger.
+    ///
+    /// [`RunOutput`]: crate::run::RunOutput
+    #[must_use]
+    pub fn totals(&self) -> UsageTotals {
+        let mut totals = UsageTotals::default();
+        for entry in &self.entries {
+            if let Effect::ModelResponse { usage, .. } = &entry.effect {
+                // A mixed-currency run cannot be summed, and inventing a figure is worse than
+                // reporting the tokens and no total.
+                let _ = totals.record("run", usage);
+            }
+        }
+        totals
     }
 
     /// Serialise as JSON Lines, so a journal can be appended to and inspected with ordinary tools.

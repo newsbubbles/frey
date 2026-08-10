@@ -43,6 +43,11 @@ pub enum RunError {
     #[error(transparent)]
     Budget(#[from] frey_context::budget::DoesNotFit),
     /// The loop hit its turn limit.
+    ///
+    /// Carries the journal, because this error's own advice is to read the transcript and there was
+    /// previously no way to: `run` returned `Err` and the record went out of scope with it. A run
+    /// that loops is the case where the transcript matters most and it was the one case that threw
+    /// it away.
     #[error(
         "the agent used all {limit} turns without finishing. Raise max_turns, or look at the \
          transcript for a loop: repeating the same failing tool call is the usual cause."
@@ -50,6 +55,8 @@ pub enum RunError {
     TurnLimit {
         /// The limit that was hit.
         limit: u32,
+        /// What happened, up to the limit.
+        journal: Box<Journal>,
     },
     /// The run needs something from outside it and nothing was there to supply it.
     #[error("the run needs input ({what}) and no approval handler was configured")]
@@ -358,6 +365,19 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     caller: call.caller.clone(),
                 };
 
+                // Announced before it runs, not after. A tool call is the part of a run a person
+                // most wants to watch happen, and an event emitted only on completion means a slow
+                // call shows as nothing at all until it finishes.
+                journal.record_event(Event::root(
+                    SeqId(turn_index),
+                    EventKind::ToolCallStarted {
+                        call: call.id.clone(),
+                        name: call.name.clone(),
+                        args_preview: preview(&call.args),
+                    },
+                ));
+                let started = std::time::Instant::now();
+
                 let definition = definitions.iter().find(|d| d.name == call.name);
                 let outcome = if over_cap {
                     ToolOutcome::Denied(
@@ -403,6 +423,20 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 };
 
                 let (content, is_error, elided) = render_outcome(&outcome);
+                let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                journal.record_event(Event::root(
+                    SeqId(turn_index),
+                    match &outcome {
+                        ToolOutcome::Failed(error) | ToolOutcome::Denied(error) => {
+                            EventKind::ToolCallFailed { call: call.id.clone(), error: error.clone() }
+                        }
+                        _ => EventKind::ToolCallFinished {
+                            call: call.id.clone(),
+                            millis,
+                            bytes_elided: elided,
+                        },
+                    },
+                ));
                 journal.record(Effect::ToolResult {
                     tool: call.name.as_str().into(),
                     content: content.clone(),
@@ -419,11 +453,32 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             turns.push(Turn::new(Role::User, results));
         }
 
-        Err(RunError::TurnLimit { limit: self.max_turns })
+        Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
 }
 
 /// Render a tool outcome for the model, keeping the truncation count so it is never silent.
+/// A short rendering of a call's arguments, for a transcript line.
+///
+/// Truncated hard: arguments can carry a whole file, and a preview that is the payload is not a
+/// preview. The full arguments are in the journal's effects for anyone who needs them.
+fn preview(args: &serde_json::Value) -> String {
+    const MAX: usize = 120;
+    let rendered = args.to_string();
+    if rendered.len() <= MAX {
+        return rendered;
+    }
+    // On a character boundary, because arguments are arbitrary text and slicing mid-codepoint
+    // panics — in the transcript path, which is the last place a run should die.
+    let cut = rendered
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= MAX)
+        .last()
+        .unwrap_or(0);
+    format!("{}…", &rendered[..cut])
+}
+
 fn render_outcome(outcome: &ToolOutcome<frey_core::tool::ToolValue>) -> (String, bool, u64) {
     match outcome {
         ToolOutcome::Ok(value) => {
@@ -581,6 +636,63 @@ mod tests {
             args: serde_json::json!({}),
             caller: Caller::Direct,
         })
+    }
+
+    /// Every tool call appears in the transcript, started and finished.
+    ///
+    /// It did not, for the whole life of the crate. `ToolCallStarted`, `ToolCallFinished` and
+    /// `ToolCallFailed` were defined in `frey-core`, translated into AG-UI frames by
+    /// `frey-harness`, and unit-tested in both — and the loop that actually runs tools emitted none
+    /// of them. Anything watching a run saw a stream with no tool activity in it at all, which is
+    /// most of what a run *is*. Nothing caught it because every test asserted on the events it
+    /// constructed itself; the first caller to read `journal.events` back off a real run got zero.
+    #[test]
+    fn a_tool_call_is_visible_in_the_transcript() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("fs_read")]),
+            Scripted::text("done"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let output = pollster::block_on(agent.run("read it")).unwrap();
+
+        let started: Vec<_> = output
+            .journal
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::ToolCallStarted { name, .. } => Some(name.as_ref().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, vec!["fs_read"], "the call has to be announced");
+        assert!(
+            output
+                .journal
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::ToolCallFinished { .. })),
+            "and its completion recorded"
+        );
+    }
+
+    /// A refused call is reported as failed, not as finished with an error buried in its output.
+    #[test]
+    fn a_refused_tool_call_is_reported_as_failed() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("nonexistent")]),
+            Scripted::text("oh"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let output = pollster::block_on(agent.run("go")).unwrap();
+
+        assert!(
+            output
+                .journal
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::ToolCallFailed { .. })),
+            "a call that did not happen must not read as one that did"
+        );
     }
 
     /// A single response asking for a great many tools does not get to run them all.
@@ -804,8 +916,14 @@ mod tests {
         );
         let agent = Agent::new(model, tools(&["fs_read"]), "test-model").max_turns(3);
         let err = pollster::block_on(agent.run("go")).unwrap_err();
-        assert!(matches!(err, RunError::TurnLimit { limit: 3 }));
+        let RunError::TurnLimit { limit, journal } = &err else { panic!("{err}") };
+        assert_eq!(*limit, 3);
         assert!(format!("{err}").contains("repeating the same failing tool call"));
+        // The advice is to read the transcript, so the transcript has to come back with it.
+        assert!(
+            journal.events.iter().any(|e| matches!(e.kind, EventKind::ToolCallStarted { .. })),
+            "a looping run is exactly when its record matters"
+        );
     }
 
     #[test]

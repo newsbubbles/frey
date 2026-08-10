@@ -77,6 +77,12 @@ impl Dialect for OpenRouter {
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
         let mut body = encode_chat(request, stream);
+        // Cost is opt-in on the wire. Without this the response carries token counts and no `cost`
+        // field at all, so `reports_cost: true` above is a promise the adapter breaks silently:
+        // every ledger entry reads as "the provider did not say" and the one thing OpenRouter is
+        // uniquely good for is switched off. Asked for here rather than left to `extra`, because a
+        // caller cannot be expected to know the capability needs enabling.
+        body["usage"] = json!({"include": true});
         if let Some(key) = &request.cache_key {
             // Sticky routing. Without it, affinity only begins after a cache hit is detected, so
             // the first few turns of every session scatter across upstreams.
@@ -317,7 +323,7 @@ fn decode_finish(finish: Option<&str>) -> StopReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frey_core::item::ToolResultItem;
+    use frey_core::item::{ToolResultItem, Turn};
 
     fn body() -> Value {
         json!({
@@ -357,6 +363,27 @@ mod tests {
             None,
             "absent means unknown, not zero"
         );
+    }
+
+    #[test]
+    fn cost_is_asked_for_on_the_wire_and_not_merely_decoded() {
+        // The decode half of cost accounting was tested and the encode half was not, so the adapter
+        // read a field it never requested. OpenRouter omits `cost` entirely unless usage accounting
+        // is switched on, which made `reports_cost: true` unfalsifiable in unit tests and always
+        // wrong in production. Found by putting a live run through it.
+        let request = Request {
+            model: ModelId::new("some/model"),
+            turns: vec![Turn::user("hello")],
+            max_output: 64,
+            ..Request::default()
+        };
+        let encoded = OpenRouter.encode(&request, false).unwrap();
+        assert_eq!(encoded["usage"], json!({"include": true}));
+
+        // Not on a plain Chat Completions server: it does not report cost, and the key would be an
+        // unknown field to a strict endpoint.
+        let chat = OpenAiChat::new(ProviderId::new("internal-vllm"));
+        assert!(chat.encode(&request, false).unwrap().get("usage").is_none());
     }
 
     #[test]
