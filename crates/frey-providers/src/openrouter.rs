@@ -11,7 +11,9 @@
 //!   The response says who served it, and the caller is told when that changes.
 
 use frey_core::ids::{CallId, ModelId, ProviderId, ToolName};
-use frey_core::item::{Caller, Item, Role, TextItem, ToolCallItem};
+use frey_core::item::{
+    Caller, Item, ReasoningItem, ReasoningVisibility, Role, TextItem, ToolCallItem,
+};
 use frey_core::provider::{ProviderError, Request, Response, StopReason};
 use frey_core::provider_caps::{
     CacheSupport, Modality, ProviderCapabilities, ReasoningSupport, StrictSupport,
@@ -224,6 +226,24 @@ fn decode_chat(
     let message = choice.get("message").unwrap_or(&Value::Null);
     let mut items = Vec::new();
 
+    // Reasoning first, because it came first. `capabilities()` declares `ReasoningSupport::Plain`
+    // and this decoder used to drop `message.reasoning` on the floor, which is the same shape of
+    // bug as claiming to report cost and never asking for it.
+    //
+    // The consequence is worse than a missing field. A reasoning model that spends its whole output
+    // budget thinking returns `content: null` with a full `reasoning` string and
+    // `finish_reason: "length"` — so the turn decoded to *zero items*, the agent loop saw no tool
+    // calls, and the run ended looking like a model that had nothing to say. Observed live on
+    // `openai/gpt-oss-20b:free` and `gpt-oss-120b`, where it read as the model getting worse.
+    if let Some(text) = message.get("reasoning").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        items.push(Item::Reasoning(ReasoningItem {
+            summary: Some(text.to_string()),
+            visibility: ReasoningVisibility::Plain,
+            carry: None,
+        }));
+    }
     if let Some(text) = message.get("content").and_then(Value::as_str)
         && !text.is_empty()
     {
@@ -384,6 +404,54 @@ mod tests {
         // unknown field to a strict endpoint.
         let chat = OpenAiChat::new(ProviderId::new("internal-vllm"));
         assert!(chat.encode(&request, false).unwrap().get("usage").is_none());
+    }
+
+    /// A reasoning model that spent its whole budget thinking is not a model with nothing to say.
+    ///
+    /// `openai/gpt-oss-20b:free` returns `content: null`, a full `reasoning` string, and
+    /// `finish_reason: "length"`. Dropping `reasoning` decoded that to zero items, so the agent
+    /// loop saw an assistant turn with no text and no tool calls and ended the run — reported as a
+    /// model producing empty turns, which blocked a tier selection for an afternoon. The adapter
+    /// declares `ReasoningSupport::Plain` and has to mean it.
+    #[test]
+    fn a_reasoning_only_answer_is_not_an_empty_one() {
+        let body = json!({
+            "id": "gen-1",
+            "model": "openai/gpt-oss-20b:free",
+            "choices": [{
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning": "The user wants a guest book. I should call site_write first…"
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        });
+
+        let response = OpenRouter.decode(&body).unwrap();
+        assert_eq!(response.stop, StopReason::MaxTokens, "truncation is still truncation");
+        assert_eq!(response.items.len(), 1, "the thinking is the turn: {:?}", response.items);
+        let Item::Reasoning(reasoning) = &response.items[0] else {
+            panic!("expected reasoning, got {:?}", response.items[0])
+        };
+        assert!(reasoning.summary.as_deref().unwrap().contains("site_write"));
+    }
+
+    /// And when there is both, the thinking comes before the answer.
+    #[test]
+    fn reasoning_precedes_the_text_it_produced() {
+        let body = json!({
+            "id": "gen-2",
+            "model": "m",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ready", "reasoning": "thinking"}
+            }]
+        });
+        let items = OpenRouter.decode(&body).unwrap().items;
+        assert!(matches!(items[0], Item::Reasoning(_)), "{items:?}");
+        assert!(matches!(items[1], Item::Text(_)), "{items:?}");
     }
 
     #[test]
