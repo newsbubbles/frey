@@ -597,12 +597,28 @@ fn build_segments(definitions: &[ToolDefinition], turns: &[Turn]) -> Vec<Segment
         let text: String = turn
             .items
             .iter()
+            // **What the encoder will actually send, not what the item holds.** These two used to
+            // disagree, and the disagreement killed runs. `format!("{other:?}")` caught
+            // `Item::Reasoning` and charged the budget for the Debug representation of a struct the
+            // Chat Completions dialect drops on the floor — so a model that reasoned at length was
+            // billed here for text that never reached the wire. One agent was refused a turn over
+            // "history (971444 tokens)": a prompt of about four megabytes, none of which would have
+            // been sent.
+            //
+            // A Debug representation is never a proxy for wire size. Anything a dialect does not
+            // encode weighs nothing, and an estimate that guesses otherwise is not an estimate of
+            // the prompt.
             .map(|i| match i {
                 Item::Text(t) => t.text.clone(),
                 Item::ToolCall(c) => format!("{}{}", c.name, c.args),
                 Item::ToolResult(r) => r.content.clone(),
-                other => format!("{other:?}"),
+                // Reasoning, media and provider blocks: carried in the item model, absent from the
+                // request. If a dialect learns to send one, its cost belongs here with it.
+                _ => String::new(),
             })
+            // A dropped item leaves nothing behind, not even the separator it would have been
+            // joined with. One newline per discarded block is small, and it is still not the prompt.
+            .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -1072,5 +1088,73 @@ mod tests {
     fn token_estimation_is_monotonic_even_though_it_is_crude() {
         assert!(estimate_tokens("a longer piece of text") > estimate_tokens("short"));
         assert_eq!(estimate_tokens(""), 0);
+    }
+}
+
+#[cfg(test)]
+mod estimate_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use frey_core::item::{ReasoningItem, ReasoningVisibility, TextItem, ToolResultItem};
+    use frey_core::taint::Provenance;
+
+    /// **The estimate must measure what the encoder sends.** These two disagreed, and the
+    /// disagreement killed runs rather than degrading them: `format!("{other:?}")` caught
+    /// `Item::Reasoning` and charged the budget for the Debug representation of a struct the Chat
+    /// Completions dialect drops. An agent was refused a turn over "history (971444 tokens)" — about
+    /// four megabytes, none of which would have been sent, on a world whose largest page was 3.7 kB.
+    ///
+    /// The budgeter then behaved correctly on a false premise, which is the worst way to be wrong:
+    /// it protected the last exchanges, found nothing left to evict, and returned `DoesNotFit` with
+    /// numbers that looked authoritative.
+    #[test]
+    fn reasoning_costs_nothing_because_nothing_sends_it() {
+        let long = "thinking out loud. ".repeat(50_000);
+
+        let quiet = vec![Turn {
+            role: Role::Assistant,
+            items: vec![Item::Text(TextItem {
+                text: "done".to_string(),
+                provenance: None,
+            })],
+        }];
+        let loud = vec![Turn {
+            role: Role::Assistant,
+            items: vec![
+                Item::Reasoning(ReasoningItem {
+                    summary: Some(long.clone()),
+                    visibility: ReasoningVisibility::Plain,
+                    carry: None,
+                }),
+                Item::Text(TextItem {
+                    text: "done".to_string(),
+                    provenance: None,
+                }),
+            ],
+        }];
+
+        let cheap = build_segments(&[], &quiet);
+        let dear = build_segments(&[], &loud);
+        assert_eq!(
+            cheap[0].est_tokens, dear[0].est_tokens,
+            "a megabyte of reasoning the encoder discards must not be billed to the prompt"
+        );
+    }
+
+    /// And what *is* sent still counts, so this did not become a free pass.
+    #[test]
+    fn a_tool_result_still_weighs_what_it_weighs() {
+        let turns = vec![Turn {
+            role: Role::User,
+            items: vec![Item::ToolResult(ToolResultItem {
+                id: frey_core::ids::CallId::new("c1"),
+                content: "x".repeat(4_000),
+                is_error: false,
+                bytes_elided: 0,
+                provenance: Provenance::new("test"),
+            })],
+        }];
+        assert_eq!(build_segments(&[], &turns)[0].est_tokens, 1_000);
     }
 }
