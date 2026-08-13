@@ -6,9 +6,13 @@
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#licence)
 
 Most agent frameworks treat the prompt as a string you concatenate. Frey treats it as what it
-actually is: a scarce, cache-sensitive, ordered resource with a budget and a price. Tools, skills,
-and code-mode are three presentations of one progressively-disclosed catalog, and nothing degrades
-quietly.
+actually is: a scarce, cache-sensitive, ordered resource with a budget and a price. Every turn
+recomputes a cache plan against the provider's real rules, and nothing degrades quietly.
+
+The larger design — tools, skills and code-mode as three presentations of one progressively-disclosed
+catalog — is built and **not yet wired into the agent loop**, which takes a fixed tool list once per
+run. The pieces are real and tested; calling them is currently yours to do. Recorded in the
+[capability audit](notes/audit/01-capability-audit.md).
 
 > **Status: 0.x, pre-release.** The API will change. It is complete enough to build on and to
 > criticise; it has not been run in production by anyone, including its author.
@@ -153,10 +157,10 @@ cargo run -p frey-cli -- doctor
 | `frey-core` | Types and traits. No I/O, so the planners are pure functions |
 | `frey-context` | Budget, cache planning, discovery, skills, code-mode codegen |
 | `frey-providers` | Anthropic, OpenAI Responses, OpenRouter, config-defined dialects |
-| `frey-tools` | The layers every tool call passes through, and `#[frey::tool]` |
+| `frey-tools` | The layers a tool call passes through, validators to build one from, `#[frey::tool]`. **No tools** |
 | `frey-agent` | The loop, the journal, replay, multi-agent spawning |
 | `frey-mcp` | Model Context Protocol, at the stateless `2026-07-28` revision |
-| `frey-sandbox` | Cross-platform confinement that fails closed |
+| `frey-sandbox` | A sandbox *policy* and availability reporting. **No enforcement backend yet** |
 | `frey-a2a` | Agent-to-agent interoperability |
 | `frey-harness` | Sessions, approvals, AG-UI, `doctor` |
 | `frey-testkit` | A scripted model and hostile fakes, for testing *your* agent |
@@ -171,10 +175,16 @@ revision, with a shim for older servers, and treats an MCP server as the untrust
 listings are re-sorted defensively so a server cannot churn your prompt cache, freshness hints are
 capped, and catalogs are private unless the server says otherwise.
 
-**A2A v1.0** and **AG-UI** are first-class, because all three protocols converged on the same
+**A2A v1.0** and **AG-UI** share MCP's shape, because all three protocols converged on the same
 concept: a task that is alive and waiting for something from outside it. Frey models that once and
-projects it three ways — which is also why a human approval, an MCP elicitation, an A2A auth
-challenge, and a frontend-executed tool are one code path.
+projects it three ways, so a human approval, an MCP elicitation, an A2A auth challenge and a
+frontend-executed tool are one type.
+
+Being precise about what that buys you today: the *projection* is real and tested, and MCP is the
+only one of the three with a working transport on both sides. `frey-a2a` is types and a lifecycle
+with no client or server, and `frey-harness::agui` is a serialiser nothing streams through. The
+convergence was worth designing for — it made the MCP server's approval handshake a dozen lines —
+but "first-class" was overstating two of the three.
 
 ---
 
@@ -195,6 +205,17 @@ challenge, and a frontend-executed tool are one code path.
   restricted grammar it invents the `filter` and `first` such a language ought to have. So you
   cannot substitute a small executor of your own. `Strategy::Local` therefore has nothing behind it
   and will keep having nothing until an engine is embedded — delegation is the only working path.
+- **There are no tools in the box, and nothing is confined.** `frey-tools` ships the layers a call
+  passes through and the validators to build a tool safely — `InWorkspace`, `AllowedProgram`,
+  `OnEgressAllowlist` — but no tool, and nothing in Frey spawns a process. `frey-sandbox` is a
+  policy language with no enforcement backend, which is consistent since there is nothing to confine.
+  R5 asked for "an actually secure shell tool" and that is not done.
+- **Progressive disclosure is not in the agent loop.** Tool search, skills and code-mode all exist,
+  are tested, and nothing in `Agent::run` calls them — it takes a fixed tool list once per run. The
+  catalog machinery is real; the loop does not use it. See the
+  [capability audit](notes/audit/01-capability-audit.md).
+- **Human approval works over MCP, not in the loop.** A tool returning `NeedsInput` inside
+  `Agent::run` is rendered to the model as "approval was not available" and the run continues.
 - **The sandbox reports what it can enforce, and it is often less than you want.** Landlock needs a
   6.12 kernel *and* `landlock` in the `lsm=` boot parameter; RHEL 9 has neither. Frey tells you
   precisely what is missing and refuses to run rather than pretending.

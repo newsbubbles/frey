@@ -57,24 +57,38 @@ clean slate by summarising it, since the summary derives from that page.
 
 ## Sandboxing
 
-`frey-sandbox` fails closed and **reports precisely what it enforced**:
+> **Read this before anything below it.** `frey-sandbox` is a **policy language and a decision
+> procedure**. It is not a sandbox. `SandboxBackend` is a trait with no implementation, no syscall is
+> made on any platform, no Landlock ruleset is applied and no Seatbelt profile compiled — and
+> nothing is confined because nothing is executed: Frey ships no tool that spawns a process. An
+> earlier version of this page presented the table below as implemented. It was wrong, and the
+> [capability audit](../notes/audit/01-capability-audit.md) §A2 records how it got that way.
 
-| Platform | Mechanism |
-|---|---|
-| Linux | Landlock — needs kernel 6.12 *and* `landlock` in the `lsm=` boot parameter |
-| macOS | Seatbelt |
-| Windows | AppContainer / restricted token + Job object |
+What `frey-sandbox` does today is decide, and report:
 
-Partial confinement is reported as partial. Landlock ABI 1 scopes the filesystem but not ports;
-reporting that as "unavailable" would push an operator toward disabling confinement entirely, so the
-refusal names exactly which control is missing.
+- `policy::validate` — would this exec be permitted by this policy?
+- `policy::decide` — what confinement is required, and is it available?
+- `probe::*_availability` — what a given platform state affords. Note that these take the ABI level
+  and the `lsm=` flag **as parameters**; they report, they do not detect.
 
-The probing logic is a pure function of a detected ABI level and an `lsm=` flag, so the *degraded*
-paths — which a healthy CI machine cannot reproduce by running — are ordinary unit tests on every
-platform. The subtlest case has its own: a kernel with Landlock compiled in but not enabled at boot
-enforces nothing, and the message names the boot parameter to change.
+That is genuinely useful — it is the part you want audited, it is pure, and it is testable on every
+platform including the degraded paths a healthy CI machine cannot reproduce. It is also, on its own,
+worth nothing at runtime until a backend exists.
 
-> **The ABI level is not yet detected by syscall.** `doctor` reports the conservative answer rather
+The mechanisms a backend would use, when one is written:
+
+| Platform | Mechanism | Requires |
+|---|---|---|
+| Linux | Landlock | kernel 6.12 *and* `landlock` in the `lsm=` boot parameter |
+| macOS | Seatbelt | — |
+| Windows | AppContainer / restricted token + Job object | — |
+
+The design decisions below are real and hold whenever a backend arrives — in particular that partial
+confinement is reported as partial. Landlock ABI 1 scopes the filesystem but not ports, and reporting
+that as "unavailable" would push an operator toward disabling confinement entirely, so the refusal
+names exactly which control is missing.
+
+> **The ABI level is also not detected by syscall.** `doctor` reports the conservative answer rather
 > than a number that might be wrong.
 
 **`ProgramAllowlist` is enforced by Frey refusing to spawn, not by the kernel** — and it is the
