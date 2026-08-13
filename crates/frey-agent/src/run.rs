@@ -1114,10 +1114,7 @@ mod estimate_tests {
 
         let quiet = vec![Turn {
             role: Role::Assistant,
-            items: vec![Item::Text(TextItem {
-                text: "done".to_string(),
-                provenance: None,
-            })],
+            items: vec![Item::Text(TextItem { text: "done".to_string(), provenance: None })],
         }];
         let loud = vec![Turn {
             role: Role::Assistant,
@@ -1127,10 +1124,7 @@ mod estimate_tests {
                     visibility: ReasoningVisibility::Plain,
                     carry: None,
                 }),
-                Item::Text(TextItem {
-                    text: "done".to_string(),
-                    provenance: None,
-                }),
+                Item::Text(TextItem { text: "done".to_string(), provenance: None }),
             ],
         }];
 
