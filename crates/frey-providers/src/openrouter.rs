@@ -11,7 +11,9 @@
 //!   The response says who served it, and the caller is told when that changes.
 
 use frey_core::ids::{CallId, ModelId, ProviderId, ToolName};
-use frey_core::item::{Caller, Item, Role, TextItem, ToolCallItem};
+use frey_core::item::{
+    Caller, Item, ReasoningItem, ReasoningVisibility, Role, TextItem, ToolCallItem,
+};
 use frey_core::provider::{ProviderError, Request, Response, StopReason};
 use frey_core::provider_caps::{
     CacheSupport, Modality, ProviderCapabilities, ReasoningSupport, StrictSupport,
@@ -66,6 +68,19 @@ impl Dialect for OpenRouter {
             cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false },
             reasoning: ReasoningSupport::Plain,
             strict_schema: StrictSupport::None,
+            // An assumption the router cannot verify, and it is stated as one. Most models behind
+            // OpenRouter do support parallel calls, so `true` is the useful default and flipping it
+            // wholesale would cost every well-behaved model an extra round trip per call — which is
+            // the throughput metric that matters most to anyone running at volume.
+            //
+            // But it is not knowable per model from here, and the exceptions are real:
+            // `meta-llama/llama-3.1-8b-instruct` answers HTTP 400 "only supports single tool-calls
+            // at once" before generating anything. Frey does not ship a per-model table for this,
+            // because a hardcoded list of upstream quirks rots faster than the release cycle.
+            //
+            // For a known exception, correct it per request rather than globally:
+            // `Agent::extra("parallel_tool_calls", false)`, or the same key on `Request::extra`.
+            // `extra` is merged last precisely so a caller can win this argument.
             parallel_tool_calls: true,
             input_modalities: vec![Modality::Text, Modality::Image],
             output_modalities: vec![Modality::Text],
@@ -76,7 +91,13 @@ impl Dialect for OpenRouter {
     }
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
-        let mut body = encode_chat(request, stream);
+        let mut body = encode_chat(request, stream, self.capabilities(&request.model));
+        // Cost is opt-in on the wire. Without this the response carries token counts and no `cost`
+        // field at all, so `reports_cost: true` above is a promise the adapter breaks silently:
+        // every ledger entry reads as "the provider did not say" and the one thing OpenRouter is
+        // uniquely good for is switched off. Asked for here rather than left to `extra`, because a
+        // caller cannot be expected to know the capability needs enabling.
+        body["usage"] = json!({"include": true});
         if let Some(key) = &request.cache_key {
             // Sticky routing. Without it, affinity only begins after a cache hit is detected, so
             // the first few turns of every session scatter across upstreams.
@@ -104,7 +125,7 @@ impl Dialect for OpenAiChat {
     }
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
-        Ok(encode_chat(request, stream))
+        Ok(encode_chat(request, stream, self.capabilities(&request.model)))
     }
 
     fn decode(&self, body: &Value) -> Result<Response, ProviderError> {
@@ -112,7 +133,7 @@ impl Dialect for OpenAiChat {
     }
 }
 
-fn encode_chat(request: &Request, stream: bool) -> Value {
+fn encode_chat(request: &Request, stream: bool, caps: ProviderCapabilities) -> Value {
     let mut messages = Vec::new();
 
     for turn in &request.turns {
@@ -130,7 +151,19 @@ fn encode_chat(request: &Request, stream: bool) -> Value {
                 Item::ToolCall(c) => tool_calls.push(json!({
                     "id": c.id.as_str(),
                     "type": "function",
-                    "function": {"name": c.name.as_str(), "arguments": c.args.to_string()},
+                    "function": {
+                        "name": c.name.as_str(),
+                        // Never `null`. Chat Completions wants a JSON *object* encoded as a
+                        // string, and some upstreams validate it: Alibaba answers HTTP 400
+                        // "the function.arguments parameter must be in JSON format" and the whole
+                        // run dies. A call with no arguments has no arguments; it does not have
+                        // null ones.
+                        "arguments": if c.args.is_null() {
+                            "{}".to_string()
+                        } else {
+                            c.args.to_string()
+                        },
+                    },
                 })),
                 Item::ToolResult(r) => messages.push(json!({
                     "role": "tool",
@@ -180,6 +213,17 @@ fn encode_chat(request: &Request, stream: bool) -> Value {
     if stream {
         body["stream"] = Value::Bool(true);
     }
+    // Sent only when the capability says the model cannot do it, and only when there are tools for
+    // it to apply to. Absent means the provider's own default, which is what a parallel-capable
+    // model wants; sending `true` to an upstream that does not support parallel calls is another
+    // way to earn a 400, so the flag is a restriction rather than a request.
+    //
+    // Before this, `parallel_tool_calls` was declared in `capabilities()` and never sent in either
+    // direction — the same shape as claiming to report cost and never asking for it.
+    if !caps.parallel_tool_calls && !request.tools.is_empty() {
+        body["parallel_tool_calls"] = Value::Bool(false);
+    }
+    // Last, so a caller can override anything above it for one model without waiting on Frey.
     for (key, value) in &request.extra {
         body[key.as_str()] = value.clone();
     }
@@ -218,6 +262,24 @@ fn decode_chat(
     let message = choice.get("message").unwrap_or(&Value::Null);
     let mut items = Vec::new();
 
+    // Reasoning first, because it came first. `capabilities()` declares `ReasoningSupport::Plain`
+    // and this decoder used to drop `message.reasoning` on the floor, which is the same shape of
+    // bug as claiming to report cost and never asking for it.
+    //
+    // The consequence is worse than a missing field. A reasoning model that spends its whole output
+    // budget thinking returns `content: null` with a full `reasoning` string and
+    // `finish_reason: "length"` — so the turn decoded to *zero items*, the agent loop saw no tool
+    // calls, and the run ended looking like a model that had nothing to say. Observed live on
+    // `openai/gpt-oss-20b:free` and `gpt-oss-120b`, where it read as the model getting worse.
+    if let Some(text) = message.get("reasoning").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        items.push(Item::Reasoning(ReasoningItem {
+            summary: Some(text.to_string()),
+            visibility: ReasoningVisibility::Plain,
+            carry: None,
+        }));
+    }
     if let Some(text) = message.get("content").and_then(Value::as_str)
         && !text.is_empty()
     {
@@ -236,12 +298,17 @@ fn decode_chat(
                         .and_then(Value::as_str)
                         .unwrap_or_default(),
                 ),
+                // An empty object rather than `Value::Null` when the arguments are absent or
+                // unparseable. Null loses on the way back out — it re-encodes as the string
+                // "null", which is not an object, and providers that check reject the next
+                // request outright. It is also the better input to schema validation: `{}` fails
+                // with "`domain` is missing", which a model can act on, and `null` does not.
                 args: call
                     .get("function")
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or(Value::Null),
+                    .unwrap_or_else(|| json!({})),
                 caller: Caller::Direct,
             }));
         }
@@ -317,7 +384,7 @@ fn decode_finish(finish: Option<&str>) -> StopReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frey_core::item::ToolResultItem;
+    use frey_core::item::{ToolResultItem, Turn};
 
     fn body() -> Value {
         json!({
@@ -356,6 +423,123 @@ mod tests {
             OpenRouter.decode(&without).unwrap().usage.reported_cost,
             None,
             "absent means unknown, not zero"
+        );
+    }
+
+    #[test]
+    fn cost_is_asked_for_on_the_wire_and_not_merely_decoded() {
+        // The decode half of cost accounting was tested and the encode half was not, so the adapter
+        // read a field it never requested. OpenRouter omits `cost` entirely unless usage accounting
+        // is switched on, which made `reports_cost: true` unfalsifiable in unit tests and always
+        // wrong in production. Found by putting a live run through it.
+        let request = Request {
+            model: ModelId::new("some/model"),
+            turns: vec![Turn::user("hello")],
+            max_output: 64,
+            ..Request::default()
+        };
+        let encoded = OpenRouter.encode(&request, false).unwrap();
+        assert_eq!(encoded["usage"], json!({"include": true}));
+
+        // Not on a plain Chat Completions server: it does not report cost, and the key would be an
+        // unknown field to a strict endpoint.
+        let chat = OpenAiChat::new(ProviderId::new("internal-vllm"));
+        assert!(chat.encode(&request, false).unwrap().get("usage").is_none());
+    }
+
+    /// A reasoning model that spent its whole budget thinking is not a model with nothing to say.
+    ///
+    /// `openai/gpt-oss-20b:free` returns `content: null`, a full `reasoning` string, and
+    /// `finish_reason: "length"`. Dropping `reasoning` decoded that to zero items, so the agent
+    /// loop saw an assistant turn with no text and no tool calls and ended the run — reported as a
+    /// model producing empty turns, which blocked a tier selection for an afternoon. The adapter
+    /// declares `ReasoningSupport::Plain` and has to mean it.
+    #[test]
+    fn a_reasoning_only_answer_is_not_an_empty_one() {
+        let body = json!({
+            "id": "gen-1",
+            "model": "openai/gpt-oss-20b:free",
+            "choices": [{
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning": "The user wants a guest book. I should call site_write first…"
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        });
+
+        let response = OpenRouter.decode(&body).unwrap();
+        assert_eq!(response.stop, StopReason::MaxTokens, "truncation is still truncation");
+        assert_eq!(response.items.len(), 1, "the thinking is the turn: {:?}", response.items);
+        let Item::Reasoning(reasoning) = &response.items[0] else {
+            panic!("expected reasoning, got {:?}", response.items[0])
+        };
+        assert!(reasoning.summary.as_deref().unwrap().contains("site_write"));
+    }
+
+    /// And when there is both, the thinking comes before the answer.
+    #[test]
+    fn reasoning_precedes_the_text_it_produced() {
+        let body = json!({
+            "id": "gen-2",
+            "model": "m",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ready", "reasoning": "thinking"}
+            }]
+        });
+        let items = OpenRouter.decode(&body).unwrap().items;
+        assert!(matches!(items[0], Item::Reasoning(_)), "{items:?}");
+        assert!(matches!(items[1], Item::Text(_)), "{items:?}");
+    }
+
+    /// A tool call with no arguments must not come back out as `null`.
+    ///
+    /// The round trip is what breaks: a model emits a call with absent or unparseable arguments,
+    /// decode turned that into `Value::Null`, and the next request re-encoded it as the *string*
+    /// `"null"`. Chat Completions wants a JSON object there, and upstreams that check say so —
+    /// Alibaba answers HTTP 400 "the function.arguments parameter of the code model must be in
+    /// JSON format" and every remaining turn of the run fails the same way. Found on
+    /// `qwen/qwen3.7-flash`, where it disqualified the model for something frey did.
+    #[test]
+    fn a_tool_call_without_arguments_round_trips_as_an_object() {
+        let body = json!({
+            "id": "gen-1",
+            "model": "m",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "money_balance", "arguments": ""}
+                    }]
+                }
+            }]
+        });
+
+        let items = OpenRouter.decode(&body).unwrap().items;
+        let Item::ToolCall(call) = &items[0] else { panic!("{items:?}") };
+        assert_eq!(call.args, json!({}), "absent arguments are an empty object, not null");
+
+        // And back out again, which is where it used to become the string "null".
+        let request = Request {
+            model: ModelId::new("m"),
+            turns: vec![Turn::new(Role::Assistant, items.clone())],
+            max_output: 64,
+            ..Request::default()
+        };
+        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let arguments = encoded["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments are a string on the wire");
+        assert_eq!(arguments, "{}");
+        assert!(
+            serde_json::from_str::<Value>(arguments).unwrap().is_object(),
+            "whatever we send must parse as an object"
         );
     }
 
@@ -408,6 +592,73 @@ mod tests {
         };
         let encoded = OpenRouter.encode(&request, false).unwrap();
         assert_eq!(encoded["tools"][0]["function"]["name"], json!("fs_read"));
+    }
+
+    use frey_core::tool_def::{JsonSchema, ToolDefinition};
+
+    /// A capability nothing sends is a claim nothing keeps. `parallel_tool_calls` was declared for
+    /// every model and never appeared on the wire in either direction — the same shape as claiming
+    /// to report cost and never asking for it.
+    ///
+    /// It is sent only as a *restriction*. Absent means the provider's own default, which is what a
+    /// parallel-capable model wants; sending `true` to an upstream that cannot do it is another way
+    /// to earn a 400.
+    #[test]
+    fn a_model_that_cannot_do_parallel_calls_is_told_not_to() {
+        let single = OpenAiChat {
+            id: ProviderId::new("groq"),
+            capabilities: Some(ProviderCapabilities {
+                parallel_tool_calls: false,
+                ..ProviderCapabilities::minimal(8_192, 1_024)
+            }),
+        };
+        let request = Request {
+            model: ModelId::new("meta-llama/llama-3.1-8b-instruct"),
+            tools: vec![ToolDefinition::new(
+                "fs_read",
+                "Read a file described well enough to be found by a search",
+                JsonSchema::empty_object(),
+            )],
+            max_output: 100,
+            ..Request::default()
+        };
+
+        assert_eq!(single.encode(&request, false).unwrap()["parallel_tool_calls"], json!(false));
+    }
+
+    /// And is silent for a model that can, so the majority does not lose a round trip per call to
+    /// accommodate the exceptions.
+    #[test]
+    fn a_parallel_capable_model_is_not_restricted() {
+        let request = Request {
+            model: ModelId::new("qwen/qwen3-30b-a3b-instruct-2507"),
+            tools: vec![ToolDefinition::new(
+                "fs_read",
+                "Read a file described well enough to be found by a search",
+                JsonSchema::empty_object(),
+            )],
+            max_output: 100,
+            ..Request::default()
+        };
+        let body = OpenRouter.encode(&request, false).unwrap();
+        assert!(body.get("parallel_tool_calls").is_none(), "absent means the provider default");
+    }
+
+    /// `extra` is merged last on purpose: a caller correcting one model must win over anything the
+    /// adapter decided, without waiting for Frey to learn about that model.
+    #[test]
+    fn extra_overrides_what_the_adapter_chose() {
+        let mut request = Request {
+            model: ModelId::new("meta-llama/llama-3.1-8b-instruct"),
+            max_output: 100,
+            ..Request::default()
+        };
+        request.extra.insert("parallel_tool_calls".into(), json!(false));
+        request.extra.insert("session_id".into(), json!("mine"));
+
+        let body = OpenRouter.encode(&request, false).unwrap();
+        assert_eq!(body["parallel_tool_calls"], json!(false));
+        assert_eq!(body["session_id"], json!("mine"), "the caller's value, not the adapter's");
     }
 
     #[test]

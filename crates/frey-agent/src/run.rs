@@ -43,6 +43,11 @@ pub enum RunError {
     #[error(transparent)]
     Budget(#[from] frey_context::budget::DoesNotFit),
     /// The loop hit its turn limit.
+    ///
+    /// Carries the journal, because this error's own advice is to read the transcript and there was
+    /// previously no way to: `run` returned `Err` and the record went out of scope with it. A run
+    /// that loops is the case where the transcript matters most and it was the one case that threw
+    /// it away.
     #[error(
         "the agent used all {limit} turns without finishing. Raise max_turns, or look at the \
          transcript for a loop: repeating the same failing tool call is the usual cause."
@@ -50,6 +55,8 @@ pub enum RunError {
     TurnLimit {
         /// The limit that was hit.
         limit: u32,
+        /// What happened, up to the limit.
+        journal: Box<Journal>,
     },
     /// The run needs something from outside it and nothing was there to supply it.
     #[error("the run needs input ({what}) and no approval handler was configured")]
@@ -72,9 +79,32 @@ pub struct RunOutput {
     pub journal: Journal,
     /// Diagnostics worth surfacing.
     pub warnings: Vec<Warning>,
+    /// Why the final turn stopped.
+    ///
+    /// The difference between an answer and *most* of an answer. A run whose last turn hit the
+    /// output cap returns `Ok` with real content, because throwing that away would be worse — but
+    /// it is not a finished answer, and a caller has to be able to tell without reading prose.
+    /// See [`is_complete`](Self::is_complete).
+    pub stop: StopReason,
 }
 
 impl RunOutput {
+    /// Whether the run reached a natural end rather than a limit.
+    ///
+    /// `false` means the final turn was cut off — the model hit its output cap mid-sentence, and
+    /// [`text`](Self::text) is a prefix of what it meant to say. Common rather than exotic with
+    /// reasoning models, which can spend the whole budget thinking before they write anything.
+    ///
+    /// This exists because the alternative was asking callers to scan `warnings` for a
+    /// [`Warning::Degraded`] with a particular string in it. Frey's rule is that nothing degrades
+    /// quietly, and a diagnostic you have to grep for is quiet enough — the same reasoning that
+    /// makes `cost` an `Option` rather than a zero, and `UsageTotals::is_complete` a method rather
+    /// than a comment.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.stop.is_truncated()
+    }
+
     /// The assistant's text, concatenated.
     #[must_use]
     pub fn text(&self) -> String {
@@ -112,6 +142,8 @@ pub struct Agent<P, T> {
     max_turns: u32,
     max_tool_calls_per_turn: u32,
     session: SessionId,
+    cache_key: Option<smol_str::SmolStr>,
+    extra: std::collections::BTreeMap<smol_str::SmolStr, serde_json::Value>,
 }
 
 impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
@@ -125,6 +157,8 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             max_turns: 24,
             max_tool_calls_per_turn: DEFAULT_MAX_TOOL_CALLS_PER_TURN,
             session: SessionId::new("default"),
+            cache_key: None,
+            extra: std::collections::BTreeMap::new(),
         }
     }
 
@@ -162,6 +196,72 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
     #[must_use]
     pub fn session(mut self, session: SessionId) -> Self {
         self.session = session;
+        self
+    }
+
+    /// Override the routing-affinity key, which otherwise defaults to the session id.
+    ///
+    /// Providers that route across upstreams use this to send related requests to the same one, so
+    /// they hit the same warm prompt cache: OpenRouter as `session_id`, OpenAI as
+    /// `prompt_cache_key`. Anthropic does not use it — its caching is by explicit breakpoint over an
+    /// exact prefix, with no routing decision to influence.
+    ///
+    /// **The session id is the right default and the wrong one for a specific, common shape.** One
+    /// long conversation shares a session and therefore shares a prefix, so keying by session is
+    /// exactly right. But a fleet of *short* sessions that share a stable prefix — the same persona
+    /// or system prompt run thousands of times — gets a distinct key per session, which scatters
+    /// them across upstreams and misses the cache the prefix was built to hit. OpenAI's key needs
+    /// sustained traffic to stay warm at all, which no single short session produces.
+    ///
+    /// For that shape, key by whatever the *prefix* belongs to rather than by the run:
+    ///
+    /// ```
+    /// # use frey_agent::run::Agent;
+    /// # fn demo<P: frey_core::provider::ModelProvider, T: frey_agent::run::ToolHost>(
+    /// #     provider: P, tools: T,
+    /// # ) -> Agent<P, T> {
+    /// Agent::new(provider, tools, "some-model")
+    ///     .system("…a persona shared by every session this agent runs…")
+    ///     .cache_key("persona:ada")
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn cache_key(mut self, key: impl Into<smol_str::SmolStr>) -> Self {
+        self.cache_key = Some(key.into());
+        self
+    }
+
+    /// Add a provider-specific field to every request this agent makes.
+    ///
+    /// `Request::extra` has always been merged last by every adapter, so it overrides anything Frey
+    /// sets — but nothing exposed it at the agent level, which meant the escape hatch existed and
+    /// could not be reached from the only constructor most callers use.
+    ///
+    /// It is the answer to "this one model needs a flag Frey does not know about", and that case is
+    /// not rare on a router fronting hundreds of upstreams. The concrete one:
+    /// `meta-llama/llama-3.1-8b-instruct` rejects any request carrying tools unless parallel calls
+    /// are disabled, which Frey cannot know per model and will not hardcode.
+    ///
+    /// ```
+    /// # use frey_agent::run::Agent;
+    /// # fn demo<P: frey_core::provider::ModelProvider, T: frey_agent::run::ToolHost>(
+    /// #     provider: P, tools: T,
+    /// # ) -> Agent<P, T> {
+    /// Agent::new(provider, tools, "meta-llama/llama-3.1-8b-instruct")
+    ///     .extra("parallel_tool_calls", false)
+    /// # }
+    /// ```
+    ///
+    /// Nothing validates the key against the provider: this is a passthrough, so a typo reaches the
+    /// wire and the provider's own error comes back. That is the intended failure — an allowlist
+    /// here would just be another table to keep current.
+    #[must_use]
+    pub fn extra(
+        mut self,
+        key: impl Into<smol_str::SmolStr>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
+        self.extra.insert(key.into(), value.into());
         self
     }
 
@@ -223,7 +323,13 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 tools: definitions.clone(),
                 marks: plan.marks.clone(),
                 max_output: caps.max_output.min(budget.reserve_output),
-                cache_key: Some(self.session.as_str().into()),
+                // The session id unless the caller named something else. See `Agent::cache_key`:
+                // the default is right for one long conversation and wrong for many short ones
+                // sharing a prefix, and only the caller knows which they are.
+                cache_key: Some(
+                    self.cache_key.clone().unwrap_or_else(|| self.session.as_str().into()),
+                ),
+                extra: self.extra.clone(),
                 ..Request::default()
             };
 
@@ -285,6 +391,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     totals,
                     journal,
                     warnings,
+                    stop: response.stop,
                 });
             }
 
@@ -319,6 +426,19 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     caller: call.caller.clone(),
                 };
 
+                // Announced before it runs, not after. A tool call is the part of a run a person
+                // most wants to watch happen, and an event emitted only on completion means a slow
+                // call shows as nothing at all until it finishes.
+                journal.record_event(Event::root(
+                    SeqId(turn_index),
+                    EventKind::ToolCallStarted {
+                        call: call.id.clone(),
+                        name: call.name.clone(),
+                        args_preview: preview(&call.args),
+                    },
+                ));
+                let started = std::time::Instant::now();
+
                 let definition = definitions.iter().find(|d| d.name == call.name);
                 let outcome = if over_cap {
                     ToolOutcome::Denied(
@@ -341,7 +461,12 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                                 ToolErrorKind::NotFound,
                                 format!("there is no tool called `{}`", call.name),
                             )
-                            .guide("Use one of the tools that were listed, or search for one."),
+                            // Points only at the list already in the prompt. The earlier wording added
+                            // "or search for one", which named an affordance this loop does not
+                            // provide — tool search lives in `frey-context` and nothing here consults
+                            // it. Guidance that sends a model after a tool that does not exist is this
+                            // project's own errors-point-forward principle pointed backwards.
+                            .guide("Use one of the tools that were listed."),
                         ),
                         // Policy is consulted before the arguments are checked, and the order is not
                         // cosmetic. Telling a model that its arguments to a forbidden tool are
@@ -359,6 +484,23 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 };
 
                 let (content, is_error, elided) = render_outcome(&outcome);
+                let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                journal.record_event(Event::root(
+                    SeqId(turn_index),
+                    match &outcome {
+                        ToolOutcome::Failed(error) | ToolOutcome::Denied(error) => {
+                            EventKind::ToolCallFailed {
+                                call: call.id.clone(),
+                                error: error.clone(),
+                            }
+                        }
+                        _ => EventKind::ToolCallFinished {
+                            call: call.id.clone(),
+                            millis,
+                            bytes_elided: elided,
+                        },
+                    },
+                ));
                 journal.record(Effect::ToolResult {
                     tool: call.name.as_str().into(),
                     content: content.clone(),
@@ -375,11 +517,27 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             turns.push(Turn::new(Role::User, results));
         }
 
-        Err(RunError::TurnLimit { limit: self.max_turns })
+        Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
 }
 
 /// Render a tool outcome for the model, keeping the truncation count so it is never silent.
+/// A short rendering of a call's arguments, for a transcript line.
+///
+/// Truncated hard: arguments can carry a whole file, and a preview that is the payload is not a
+/// preview. The full arguments are in the journal's effects for anyone who needs them.
+fn preview(args: &serde_json::Value) -> String {
+    const MAX: usize = 120;
+    let rendered = args.to_string();
+    if rendered.len() <= MAX {
+        return rendered;
+    }
+    // On a character boundary, because arguments are arbitrary text and slicing mid-codepoint
+    // panics — in the transcript path, which is the last place a run should die.
+    let cut = rendered.char_indices().map(|(i, _)| i).take_while(|i| *i <= MAX).last().unwrap_or(0);
+    format!("{}…", &rendered[..cut])
+}
+
 fn render_outcome(outcome: &ToolOutcome<frey_core::tool::ToolValue>) -> (String, bool, u64) {
     match outcome {
         ToolOutcome::Ok(value) => {
@@ -439,12 +597,28 @@ fn build_segments(definitions: &[ToolDefinition], turns: &[Turn]) -> Vec<Segment
         let text: String = turn
             .items
             .iter()
+            // **What the encoder will actually send, not what the item holds.** These two used to
+            // disagree, and the disagreement killed runs. `format!("{other:?}")` caught
+            // `Item::Reasoning` and charged the budget for the Debug representation of a struct the
+            // Chat Completions dialect drops on the floor — so a model that reasoned at length was
+            // billed here for text that never reached the wire. One agent was refused a turn over
+            // "history (971444 tokens)": a prompt of about four megabytes, none of which would have
+            // been sent.
+            //
+            // A Debug representation is never a proxy for wire size. Anything a dialect does not
+            // encode weighs nothing, and an estimate that guesses otherwise is not an estimate of
+            // the prompt.
             .map(|i| match i {
                 Item::Text(t) => t.text.clone(),
                 Item::ToolCall(c) => format!("{}{}", c.name, c.args),
                 Item::ToolResult(r) => r.content.clone(),
-                other => format!("{other:?}"),
+                // Reasoning, media and provider blocks: carried in the item model, absent from the
+                // request. If a dialect learns to send one, its cost belongs here with it.
+                _ => String::new(),
             })
+            // A dropped item leaves nothing behind, not even the separator it would have been
+            // joined with. One newline per discarded block is small, and it is still not the prompt.
+            .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -539,6 +713,63 @@ mod tests {
         })
     }
 
+    /// Every tool call appears in the transcript, started and finished.
+    ///
+    /// It did not, for the whole life of the crate. `ToolCallStarted`, `ToolCallFinished` and
+    /// `ToolCallFailed` were defined in `frey-core`, translated into AG-UI frames by
+    /// `frey-harness`, and unit-tested in both — and the loop that actually runs tools emitted none
+    /// of them. Anything watching a run saw a stream with no tool activity in it at all, which is
+    /// most of what a run *is*. Nothing caught it because every test asserted on the events it
+    /// constructed itself; the first caller to read `journal.events` back off a real run got zero.
+    #[test]
+    fn a_tool_call_is_visible_in_the_transcript() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("fs_read")]),
+            Scripted::text("done"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let output = pollster::block_on(agent.run("read it")).unwrap();
+
+        let started: Vec<_> = output
+            .journal
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::ToolCallStarted { name, .. } => Some(name.as_ref().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, vec!["fs_read"], "the call has to be announced");
+        assert!(
+            output
+                .journal
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::ToolCallFinished { .. })),
+            "and its completion recorded"
+        );
+    }
+
+    /// A refused call is reported as failed, not as finished with an error buried in its output.
+    #[test]
+    fn a_refused_tool_call_is_reported_as_failed() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("nonexistent")]),
+            Scripted::text("oh"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let output = pollster::block_on(agent.run("go")).unwrap();
+
+        assert!(
+            output
+                .journal
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::ToolCallFailed { .. })),
+            "a call that did not happen must not read as one that did"
+        );
+    }
+
     /// A single response asking for a great many tools does not get to run them all.
     ///
     /// From live traffic rather than imagination: `meta-llama/llama-3.1-8b-instruct` emitted
@@ -603,6 +834,95 @@ mod tests {
 
         assert!(shown.contains("only 2 may run at once"), "the limit is named: {shown}");
         assert!(shown.contains("Ask for fewer tools"), "and what to do about it: {shown}");
+    }
+
+    /// Routing affinity defaults to the session id, which is right for one long conversation:
+    /// everything in it shares a prefix, so everything in it should reach the same warm cache.
+    #[test]
+    fn routing_affinity_defaults_to_the_session() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+            .session(SessionId::new("session-42"));
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().cache_key.as_deref(), Some("session-42"));
+    }
+
+    /// And is overridable, because the default is wrong for the opposite shape: many short sessions
+    /// sharing one stable prefix get a distinct key each, which scatters them across upstreams and
+    /// misses the cache the prefix exists to hit. Only the caller knows which shape they are.
+    #[test]
+    fn routing_affinity_can_be_keyed_to_the_prefix_instead() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+            .session(SessionId::new("session-42"))
+            .cache_key("persona:ada");
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().cache_key.as_deref(), Some("persona:ada"));
+    }
+
+    /// Two runs that share a persona and nothing else must present the same key, or the override
+    /// has not bought anything. This is the property the whole setter exists for.
+    #[test]
+    fn two_sessions_sharing_a_persona_share_a_key() {
+        let keys: Vec<_> = ["session-1", "session-2"]
+            .iter()
+            .map(|session| {
+                let model = ScriptedModel::replying("done");
+                let agent = Agent::new(model.clone(), tools(&[]), "test-model")
+                    .session(SessionId::new(*session))
+                    .cache_key("persona:ada");
+                pollster::block_on(agent.run("go")).unwrap();
+                model.last().cache_key.clone()
+            })
+            .collect();
+
+        assert_eq!(keys[0], keys[1], "a shared prefix must present a shared key");
+    }
+
+    /// The escape hatch has to be reachable from the constructor callers actually use. `extra` was
+    /// merged by every adapter and exposed by nothing, which is an escape hatch behind a locked
+    /// door.
+    #[test]
+    fn provider_specific_fields_reach_the_request() {
+        let model = ScriptedModel::replying("done");
+        let agent = Agent::new(model.clone(), tools(&[]), "meta-llama/llama-3.1-8b-instruct")
+            .extra("parallel_tool_calls", false);
+        pollster::block_on(agent.run("go")).unwrap();
+
+        assert_eq!(model.last().extra.get("parallel_tool_calls"), Some(&serde_json::json!(false)));
+    }
+
+    /// An answer cut off at the output cap is returned rather than discarded — the content is real
+    /// and throwing it away would be worse — but it is not a finished answer, and the caller can
+    /// tell from a value instead of from prose in `warnings`.
+    #[test]
+    fn a_truncated_answer_does_not_claim_to_be_complete() {
+        let model = ScriptedModel::new(vec![Scripted::truncated("The three steps are: first, ")]);
+        let out = pollster::block_on(
+            Agent::new(model, tools(&[]), "test-model").run("explain the process"),
+        )
+        .unwrap();
+
+        assert!(!out.is_complete(), "the model hit its cap mid-sentence");
+        assert_eq!(out.stop, StopReason::MaxTokens);
+        assert!(!out.text().is_empty(), "and the partial answer is still returned");
+        assert!(
+            out.warnings.iter().any(|w| matches!(w, Warning::Degraded { .. })),
+            "the warning stays too; the field is for telling, the warning is for reading"
+        );
+    }
+
+    /// The ordinary case has to stay ordinary, or the flag is just noise.
+    #[test]
+    fn a_finished_answer_says_it_is_complete() {
+        let model = ScriptedModel::replying("done");
+        let out =
+            pollster::block_on(Agent::new(model, tools(&[]), "test-model").run("go")).unwrap();
+
+        assert!(out.is_complete());
+        assert_eq!(out.stop, StopReason::EndTurn);
     }
 
     /// The default has to be high enough that ordinary parallel fan-out is untouched. A model that
@@ -681,7 +1001,18 @@ mod tests {
             panic!("expected a tool result")
         };
         assert!(is_error);
-        assert!(content.contains("search for one"), "a bare failure just loops: {content}");
+        assert!(
+            content.contains("Use one of the tools that were listed"),
+            "a bare failure just loops: {content}"
+        );
+        // The guidance must not name an affordance this loop does not provide. Tool search lives in
+        // `frey-context` and nothing in the loop consults it, so telling a model to search for a
+        // tool sends it hunting for something that is not there — and a model that takes the advice
+        // burns a turn proving it.
+        assert!(
+            !content.contains("search"),
+            "guidance may only point at what the loop actually offers: {content}"
+        );
     }
 
     #[test]
@@ -704,8 +1035,14 @@ mod tests {
         );
         let agent = Agent::new(model, tools(&["fs_read"]), "test-model").max_turns(3);
         let err = pollster::block_on(agent.run("go")).unwrap_err();
-        assert!(matches!(err, RunError::TurnLimit { limit: 3 }));
+        let RunError::TurnLimit { limit, journal } = &err else { panic!("{err}") };
+        assert_eq!(*limit, 3);
         assert!(format!("{err}").contains("repeating the same failing tool call"));
+        // The advice is to read the transcript, so the transcript has to come back with it.
+        assert!(
+            journal.events.iter().any(|e| matches!(e.kind, EventKind::ToolCallStarted { .. })),
+            "a looping run is exactly when its record matters"
+        );
     }
 
     #[test]
@@ -751,5 +1088,67 @@ mod tests {
     fn token_estimation_is_monotonic_even_though_it_is_crude() {
         assert!(estimate_tokens("a longer piece of text") > estimate_tokens("short"));
         assert_eq!(estimate_tokens(""), 0);
+    }
+}
+
+#[cfg(test)]
+mod estimate_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use frey_core::item::{ReasoningItem, ReasoningVisibility, TextItem, ToolResultItem};
+    use frey_core::taint::Provenance;
+
+    /// **The estimate must measure what the encoder sends.** These two disagreed, and the
+    /// disagreement killed runs rather than degrading them: `format!("{other:?}")` caught
+    /// `Item::Reasoning` and charged the budget for the Debug representation of a struct the Chat
+    /// Completions dialect drops. An agent was refused a turn over "history (971444 tokens)" — about
+    /// four megabytes, none of which would have been sent, on a world whose largest page was 3.7 kB.
+    ///
+    /// The budgeter then behaved correctly on a false premise, which is the worst way to be wrong:
+    /// it protected the last exchanges, found nothing left to evict, and returned `DoesNotFit` with
+    /// numbers that looked authoritative.
+    #[test]
+    fn reasoning_costs_nothing_because_nothing_sends_it() {
+        let long = "thinking out loud. ".repeat(50_000);
+
+        let quiet = vec![Turn {
+            role: Role::Assistant,
+            items: vec![Item::Text(TextItem { text: "done".to_string(), provenance: None })],
+        }];
+        let loud = vec![Turn {
+            role: Role::Assistant,
+            items: vec![
+                Item::Reasoning(ReasoningItem {
+                    summary: Some(long.clone()),
+                    visibility: ReasoningVisibility::Plain,
+                    carry: None,
+                }),
+                Item::Text(TextItem { text: "done".to_string(), provenance: None }),
+            ],
+        }];
+
+        let cheap = build_segments(&[], &quiet);
+        let dear = build_segments(&[], &loud);
+        assert_eq!(
+            cheap[0].est_tokens, dear[0].est_tokens,
+            "a megabyte of reasoning the encoder discards must not be billed to the prompt"
+        );
+    }
+
+    /// And what *is* sent still counts, so this did not become a free pass.
+    #[test]
+    fn a_tool_result_still_weighs_what_it_weighs() {
+        let turns = vec![Turn {
+            role: Role::User,
+            items: vec![Item::ToolResult(ToolResultItem {
+                id: frey_core::ids::CallId::new("c1"),
+                content: "x".repeat(4_000),
+                is_error: false,
+                bytes_elided: 0,
+                provenance: Provenance::new("test"),
+            })],
+        }];
+        assert_eq!(build_segments(&[], &turns)[0].est_tokens, 1_000);
     }
 }

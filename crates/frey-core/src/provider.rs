@@ -300,6 +300,41 @@ pub trait ModelProvider: Send + Sync {
     ) -> impl Future<Output = Result<EventStream, ProviderError>> + Send;
 }
 
+/// Sharing one adapter between many agents.
+///
+/// Every method here takes `&self`, which is what makes a single adapter usable from any number of
+/// concurrent agents — but `Agent::new` takes its provider **by value**, so without this impl the
+/// only way to give two agents the same provider is to construct two of them. That is precisely
+/// what the adapter documentation warns against: each carries its own connection pool, DNS cache
+/// and TLS session store, and multiplying those by a population fails as socket exhaustion rather
+/// than as anything that looks like a client problem.
+///
+/// So the recommended pattern was documented in three places and did not compile. Found by the
+/// first caller that actually needed thousands of agents on one pool.
+impl<P: ModelProvider + ?Sized> ModelProvider for std::sync::Arc<P> {
+    fn id(&self) -> ProviderId {
+        (**self).id()
+    }
+
+    fn capabilities(&self, model: &ModelId) -> ProviderCapabilities {
+        (**self).capabilities(model)
+    }
+
+    fn complete(
+        &self,
+        request: Request,
+    ) -> impl Future<Output = Result<Response, ProviderError>> + Send {
+        (**self).complete(request)
+    }
+
+    fn stream(
+        &self,
+        request: Request,
+    ) -> impl Future<Output = Result<EventStream, ProviderError>> + Send {
+        (**self).stream(request)
+    }
+}
+
 /// A task handed to an external agent process.
 #[derive(Debug, Clone)]
 pub struct DelegatedTask {
@@ -457,6 +492,40 @@ mod tests {
         let other = StopReason::Other("content_filter".into());
         assert!(!other.is_truncated() && !other.wants_tools());
         assert_eq!(serde_json::to_string(&other).unwrap(), r#"{"other":"content_filter"}"#);
+    }
+
+    #[test]
+    fn one_adapter_behind_an_arc_serves_many_agents() {
+        // The pattern the adapter docs recommend, and until this impl existed it did not compile:
+        // `Agent::new` takes its provider by value, so sharing one required `Arc<P>` to itself be a
+        // provider. A caller following the documentation got a trait-bound error and the obvious
+        // way out — construct one adapter each — is the failure mode the documentation is warning
+        // about. Written as a compile-time proof because that is the half that was missing.
+        struct Stub;
+        impl ModelProvider for Stub {
+            fn id(&self) -> ProviderId {
+                ProviderId::new("stub")
+            }
+            fn capabilities(&self, _model: &ModelId) -> ProviderCapabilities {
+                ProviderCapabilities::minimal(1_000, 100)
+            }
+            async fn complete(&self, _request: Request) -> Result<Response, ProviderError> {
+                Err(ProviderError::Cancelled)
+            }
+            async fn stream(&self, _request: Request) -> Result<EventStream, ProviderError> {
+                Err(ProviderError::Cancelled)
+            }
+        }
+
+        fn takes_by_value<P: ModelProvider>(provider: P) -> ProviderId {
+            provider.id()
+        }
+
+        let shared = std::sync::Arc::new(Stub);
+        // Two owners, one adapter, one connection pool.
+        assert_eq!(takes_by_value(std::sync::Arc::clone(&shared)), ProviderId::new("stub"));
+        assert_eq!(takes_by_value(std::sync::Arc::clone(&shared)), ProviderId::new("stub"));
+        assert_eq!(shared.capabilities(&ModelId::new("any")).max_context, 1_000);
     }
 
     #[test]

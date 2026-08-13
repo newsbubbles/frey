@@ -97,6 +97,57 @@ pub enum Warning {
     },
 }
 
+/// The doc comment on this type says these "should read like good compiler errors: what happened,
+/// what it costs, what to do" — and until this impl existed there was no way to read them at all.
+///
+/// A caller who wanted to surface a warning had to write a match over eight `#[non_exhaustive]`
+/// variants, which downstream crates cannot do exhaustively, so in practice every caller either
+/// used `{:?}` or dropped them. Both defeat the point: "nothing degrades quietly" is only true if
+/// the diagnostic reaches a person.
+impl std::fmt::Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CacheChurn { segment, tokens, advice } => write!(
+                f,
+                "cache churn: `{segment}` changed and took {tokens} cached tokens with it, every \
+                 turn. {advice}"
+            ),
+            Self::BelowMinPrefix { have, need } => write!(
+                f,
+                "caching is doing nothing: the prefix is {have} tokens and this model needs {need}. \
+                 Providers do not report this, so nothing else will tell you."
+            ),
+            Self::Degraded { capability, fallback } => {
+                write!(f, "no {capability} here; {fallback}")
+            }
+            Self::RouteChanged { from, to } => write!(
+                f,
+                "the router moved this call from {from} to {to}, which changes the tokenizer, the \
+                 price, and whether the cache still exists"
+            ),
+            Self::BudgetPressure { used_percent, action } => {
+                write!(f, "context {used_percent}% full; {action}")
+            }
+            Self::LookbackExceeded { blocks, limit } => write!(
+                f,
+                "that turn added {blocks} blocks and this provider looks back {limit}, so the next \
+                 request misses the cache entirely — with no error from anyone"
+            ),
+            Self::EventsDropped { count } => {
+                write!(f, "{count} presentation event(s) dropped to keep up")
+            }
+            Self::ToolCallsCapped { requested, cap } => write!(
+                f,
+                "the model asked for {requested} tool calls in one response and {cap} were \
+                 permitted; the rest were refused, not silently dropped"
+            ),
+            // Deliberately no catch-all. `#[non_exhaustive]` does not bind this crate, so a new
+            // variant breaks this match at compile time — which is the point. A warning nobody
+            // wrote a sentence for is a warning that reaches a person as `Debug` output.
+        }
+    }
+}
+
 /// Something that happened during a run.
 /// `EventKind` is externally tagged for the same reason [`crate::item::Item`] is: it carries
 /// [`Usage`], which holds the provider's raw usage object, and internal tagging would corrupt it.

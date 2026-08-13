@@ -14,7 +14,7 @@ use frey_core::event::Event;
 use frey_core::ids::{RunId, SeqId};
 use frey_core::item::Item;
 use frey_core::provider::{Response, StopReason};
-use frey_core::usage::Usage;
+use frey_core::usage::{Usage, UsageTotals};
 use smol_str::SmolStr;
 
 /// One recorded non-deterministic effect.
@@ -136,7 +136,39 @@ impl Journal {
         self.entries.is_empty()
     }
 
+    /// What the run consumed, recomputed from the record.
+    ///
+    /// The journal is the session, so this is derivable rather than something to carry alongside —
+    /// and it is the only way to price a run that ended in a way that has no [`RunOutput`]. A
+    /// looping agent still spent money, and a turn limit that reports no cost is how a runaway
+    /// becomes invisible in the ledger.
+    ///
+    /// [`RunOutput`]: crate::run::RunOutput
+    #[must_use]
+    pub fn totals(&self) -> UsageTotals {
+        let mut totals = UsageTotals::default();
+        for entry in &self.entries {
+            if let Effect::ModelResponse { usage, .. } = &entry.effect {
+                // A mixed-currency run cannot be summed, and inventing a figure is worse than
+                // reporting the tokens and no total.
+                let _ = totals.record("run", usage);
+            }
+        }
+        totals
+    }
+
     /// Serialise as JSON Lines, so a journal can be appended to and inspected with ordinary tools.
+    ///
+    /// One record per line, effects first and then events. Effect lines are bare [`Entry`] objects
+    /// and event lines are wrapped as `{"event": …}`, which is what lets a reader tell them apart
+    /// in a stream and what keeps files written before events were persisted readable.
+    ///
+    /// **This used to write effects only.** Replay is defined over effects, so a journal that had
+    /// been through a file still replayed perfectly and reported an empty transcript — a caller who
+    /// persisted and reloaded got something that worked and said nothing, with no way to tell it
+    /// apart from a run that genuinely emitted no events. That is the quiet degradation this
+    /// project exists to refuse, and it was invisible because the round-trip test compared
+    /// `entries` rather than the whole journal. It now compares the whole journal.
     ///
     /// # Errors
     /// Returns the serialisation failure.
@@ -146,17 +178,28 @@ impl Journal {
             out.push_str(&serde_json::to_string(entry)?);
             out.push('\n');
         }
+        for event in &self.events {
+            out.push_str(&serde_json::to_string(&serde_json::json!({ "event": event }))?);
+            out.push('\n');
+        }
         Ok(out)
     }
 
     /// Parse a journal from JSON Lines.
+    ///
+    /// Accepts both line shapes, so a file written by an earlier version — effects only, no
+    /// wrapper — loads as a journal with an empty event stream rather than failing.
     ///
     /// # Errors
     /// Returns the first line that failed to parse.
     pub fn from_jsonl(run: RunId, text: &str) -> Result<Self, serde_json::Error> {
         let mut journal = Self::new(run);
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            journal.entries.push(serde_json::from_str(line)?);
+            let value: serde_json::Value = serde_json::from_str(line)?;
+            match value.get("event") {
+                Some(event) => journal.events.push(serde_json::from_value(event.clone())?),
+                None => journal.entries.push(serde_json::from_value(value)?),
+            }
         }
         Ok(journal)
     }
@@ -369,6 +412,52 @@ mod tests {
 
         let parsed = Journal::from_jsonl(RunId::new("r1"), &text).unwrap();
         assert_eq!(parsed.entries, journal.entries);
+    }
+
+    /// The whole journal, not just the effects it replays from.
+    ///
+    /// This assertion used to compare `entries` alone, which is why nobody noticed that a journal
+    /// through a file lost its entire event stream. It replayed perfectly and reported nothing —
+    /// indistinguishable from a run that emitted no events, which is the quiet degradation this
+    /// project claims not to have.
+    #[test]
+    fn the_transcript_survives_a_round_trip_not_only_the_effects() {
+        use frey_core::event::{Event, EventKind};
+        use frey_core::ids::{CallId, ToolName};
+
+        let mut journal = recorded();
+        journal.record_event(Event::root(
+            SeqId(0),
+            EventKind::ToolCallStarted {
+                call: CallId::new("c1"),
+                name: ToolName::new("fs_read"),
+                args_preview: "{\"path\":\"a\"}".into(),
+            },
+        ));
+        journal.record_event(Event::root(
+            SeqId(1),
+            EventKind::TurnStarted { turn: frey_core::ids::TurnId(0) },
+        ));
+        assert!(!journal.events.is_empty(), "the fixture has something to lose");
+
+        let parsed = Journal::from_jsonl(RunId::new("r1"), &journal.to_jsonl().unwrap()).unwrap();
+        assert_eq!(parsed, journal, "the whole journal, not just what replay needs");
+    }
+
+    /// A file written before events were persisted must still load. deadnet had journals on disk
+    /// within an hour of wiring Frey up, so "nobody has files yet" was already false.
+    #[test]
+    fn a_file_without_event_lines_still_loads() {
+        let effects_only = recorded()
+            .entries
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed = Journal::from_jsonl(RunId::new("r1"), &effects_only).unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+        assert!(parsed.events.is_empty(), "an old file genuinely has none");
     }
 
     #[test]
