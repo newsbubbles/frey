@@ -195,6 +195,42 @@ distinction the whole file exists to preserve.
 
 ---
 
+### I-009 · An adversarial review of the day's work found 25 defects
+
+**found_by: code-reading** · both · severity: high
+
+Six independent readers over everything above, each given one dimension and the real tree; every
+finding then handed to a separate skeptic instructed to refute it and to default to refuted. 38
+candidates, **25 survived**. Filed as one entry because the method is the finding.
+
+The worst of them predates all of today's work and sits in the wedge: **`Budgeter::fit` evicted,
+announced what it had freed, and the loop sent the untrimmed history anyway.** `fitted.evicted` was
+read nowhere in the crate. Nothing failed — the run succeeded and the freed tokens were billed —
+until a prompt overshot far enough for the provider to refuse it, from a framework that had just
+said it had made room.
+
+That one is worth separating from the rest. Every other honesty defect this project has recorded is
+a sentence a person wrote and did not go back to. This one is *generated at runtime, once per turn,
+by the code*, and it is the exact failure the whole programme exists to make impossible.
+
+Two of the twenty-five were genuinely `found_by: system` and are already above — `marks::survey`
+catching the OpenAI declaration (I-003), and the producer lint catching `Effect::InputSupplied` once
+its swept list was widened. The other twenty-three were found by reading, which is the honest
+number and the uncomfortable one: **the instruments built this morning found two of the defects in
+the instruments built this morning.**
+
+Six of the twenty-five were the artifact overclaiming itself — `claims.toml` rows pointing at tests
+that did not establish them, including one settled by a test whose two sides come from the same
+expression. In a repository whose deliverable is *not overclaiming*, an overclaim inside the claims
+table is self-refuting, and it is the category that most needed an outside reader.
+
+All twenty-five are fixed or recorded. What is not fixed is the underlying rate: everything here was
+written and self-checked in one sitting, and one adversarial pass over it found this much. The
+lesson is not "review more"; it is that **a check written by the same person in the same hour as the
+code shares its blind spot**, which is the same reason the capability audit missed two adapters.
+
+---
+
 ## Open
 
 - **No `frey_rev` in any historical record.** Everything before today is attributable to "frey",

@@ -15,7 +15,7 @@ calendar time and two operator actions, and neither can be compressed by writing
 | Producer lint in CI | `cargo xtask producers`; found 10, fixed 2, 8 acknowledged |
 | `RouteChanged` producer written | plus `TurnStarted` and `EventsDropped` |
 | Three event-stream fixes in `run.rs` | `RunFinished.cost`, `RunFinished` on every exit, seen-set dedup |
-| `claims.toml` + CI check | 50 rows; the check resolves test names and dated evidence, not paths |
+| `claims.toml` + CI check | 53 rows; the check resolves test names and dated evidence, not paths |
 | MCP conformance sweep | 10 servers, `notes/conformance/`; two real findings |
 | **Dedicated capped OpenRouter key** | **operator action — see below** |
 | Live `AgentCli` probe, live 402 probe | not run; both need spend |
@@ -101,5 +101,12 @@ The day-90 deliverable was never the word. It is replacing the README's status l
 precise enough that a staff-level reader can check every number in it, with `claims.toml` standing
 behind it and a third of its rows still saying UNEVIDENCED.
 
-Today: **28 settled, 0 operated, 2 tested-only, 13 UNEVIDENCED, 7 retracted.** The column that
-matters is the second one, and it stays at zero until the nights run.
+Today: **28 settled, 1 operated, 3 tested-only, 14 UNEVIDENCED, 7 retracted.**
+
+The column that matters is the second one, and the single row in it should be read narrowly. It is
+`mcp.works-with-servers-frey-did-not-write`, settled by `results:notes/conformance/results.jsonl` —
+a dated record of frey's client connecting to ten third-party servers, which is genuinely a run
+against something the repository does not control and genuinely not a test. It is also free: no
+inference, no spend, no unattended hours. **It expires in 120 days**, and the honest reading of a
+one-row `operated` column is that the cheapest possible operated claim is the only one this project
+has earned so far. The rest still waits on the nights.
