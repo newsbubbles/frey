@@ -275,8 +275,11 @@ pub fn timings(path: Option<&str>, json: bool) -> ExitCode {
         med(timings.iter().map(|t| t.tools_us).collect())
     );
     println!("  {:<12} {total:>10}", "turn");
-    if total > 0 {
-        println!("\nFrey is {}‰ of a median turn here.", overhead.saturating_mul(1000) / total);
+    // Parts per million, matching `TurnTiming::overhead_ppm`. This printed per-mille until the
+    // rename and would have read `0` on any journal from a real run — the same defect as the type,
+    // in the tool built to read the type, missed because the rename was done by method name.
+    if let Some(ppm) = overhead.saturating_mul(1_000_000).checked_div(total) {
+        println!("\nFrey is {ppm} ppm of a median turn here.");
     }
     ExitCode::SUCCESS
 }
