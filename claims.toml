@@ -255,16 +255,66 @@ settled_by = "test:freys_client_and_freys_server_agree_over_a_loopback"
 id = "mcp.works-with-servers-frey-did-not-write"
 claim = "Frey's MCP client lists tools from third-party servers it did not write."
 stated_in = ["docs/mcp.md", "notes/conformance/00-first-sweep.md"]
+status = "retracted"
+would_settle = """
+**This was `operated` for six hours on evidence that never ran the code it was about.** The
+conformance sweep hand-rolls JSON-RPC over stdio; `xtask` does not depend on `frey-mcp` at all, and
+its own module doc opened with "Connect Frey's MCP client to servers Frey did not write". It
+measured the ecosystem, which is real and kept as `mcp.the-ecosystem-still-needs-a-handshake`. It
+measured nothing about Frey.
+
+Worse, when the code *is* read: `McpClient` has no shipped `Transport`, and the client never sends
+`initialize`. Against the six servers that answered — none of which speak the stateless revision —
+it would list nothing.
+
+Settling this needs a stdio transport, the legacy handshake behind `ServerIdentity::stateless`, and
+a sweep that constructs an `McpClient`. See I-011.
+"""
+
+[[claim]]
+id = "mcp.the-ecosystem-still-needs-a-handshake"
+claim = "MCP servers in the wild require the legacy initialize handshake, so a client needs the shim."
+stated_in = ["notes/conformance/00-first-sweep.md"]
 status = "operated"
 settled_by = "results:notes/conformance/results.jsonl"
 stale_after_days = 120
 would_settle = """
-Six real stdio servers answered, 67 tools. The named test uses a `FakeServer` and could not settle
-this: `notes/conformance/00-first-sweep.md` opens by calling that shape "no test at all of the
-protocol", so citing one here would have been the artifact contradicting itself two files apart.
+Ten stdio servers, six reachable, **0 answering `server/discover`**. This is what the sweep actually
+establishes, and it stands on its own: it is a measurement of the ecosystem taken with a
+hand-rolled client, and a hand-rolled client is a perfectly good instrument for measuring somebody
+else's server. It is not one for measuring Frey's.
 
-The window is 120 days because the ecosystem moves and a sweep from six months ago is a claim about
-six months ago. Re-running it costs nothing.
+120 days because the ecosystem moves, and the column going from 0 to non-zero is the cheapest
+possible read on whether the revision Frey bet on is the one that gets adopted.
+"""
+
+[[claim]]
+id = "mcp.client-can-connect"
+claim = "Frey's MCP client can connect to a server out of the box."
+status = "retracted"
+would_settle = """
+`McpClient<T: Transport>` ships **no** implementation of `Transport`. Both in this repository —
+`FakeServer` and `Loopback` — are inside `#[cfg(test)]`. A caller gets the protocol logic, the
+defensive re-sorting and the caching, and has to write the pipe. That is a defensible library
+design and it was never said out loud, which is the part that was wrong.
+
+A shipped stdio transport, plus one test that lists tools from a real server through it.
+"""
+
+[[claim]]
+id = "mcp.legacy-server-shim"
+claim = "Frey's MCP client falls back to the legacy handshake for pre-stateless servers."
+stated_in = ["README.md", "docs/mcp.md"]
+status = "retracted"
+would_settle = """
+`negotiate()` detects a pre-stateless server correctly and writes `stateless: false` into
+`ServerIdentity`. **Nothing reads that field.** No `initialize`, no `notifications/initialized`,
+anywhere in the client. The shim is a boolean and a doc comment.
+
+The same shape as I-001 and I-003 and the producer lint's whole reason for existing — a declared
+capability with no producer on the path that mattered — and the lint could not see it, because it
+sweeps enum variants and this one is a struct field. A field-level orphan check would have caught
+it and does not exist.
 """
 
 [[claim]]

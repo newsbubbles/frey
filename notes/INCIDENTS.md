@@ -267,6 +267,54 @@ producer lint cannot see this one, because the producer exists and does the wron
 
 ---
 
+### I-011 · The MCP client cannot connect to anything, and the sweep that "proved" it could never used it
+
+**found_by: code-reading** · frey · severity: high
+
+Asked a question about MCP startup latency. Went to look at the client's connect path. Found three
+things, each of which makes the next one worse.
+
+1. **`McpClient<T: Transport>` ships no `Transport`.** Both implementations in the repository —
+   `FakeServer` and `Loopback` — are inside `#[cfg(test)]`. No stdio, no HTTP. A caller gets the
+   protocol logic and writes the pipe themselves. That is a defensible library design; it was never
+   said out loud, and the docs read as though you could connect.
+
+2. **There is no client-side shim for older servers.** `negotiate()` correctly identifies a
+   pre-stateless server from its method-not-found and writes `stateless: false` into
+   `ServerIdentity`. **Nothing reads that field.** `initialize` and `notifications/initialized` are
+   never sent by the client, anywhere. Since the sweep established that **0 of 6** reachable
+   third-party servers speak the stateless revision, the client would list nothing from any real
+   server tested. The README and `docs/mcp.md` both advertised the shim.
+
+3. **`cargo xtask conformance` does not use Frey's MCP client.** `xtask` does not depend on
+   `frey-mcp`. It hand-rolls JSON-RPC over stdio — which is *why* it works, and why nobody noticed
+   the client could not. Its module doc opened with *"Connect Frey's MCP client to servers Frey did
+   not write."*
+
+**The compounding is the finding.** Any one of these is ordinary. Together they produced a claim —
+`mcp.works-with-servers-frey-did-not-write`, status `operated`, the **only** `operated` row in the
+file — resting on evidence that never executed the subject of the claim. It went into the 0.2.0
+release notes and the README status line this morning, roughly six hours before this entry.
+
+The instrument was pointed at the ecosystem and the label said it was pointed at us.
+
+**What was true and is kept:** the sweep's actual measurement. Ten servers, six reachable, zero
+stateless, one churning, 67 tools. That is a fact about the ecosystem, a hand-rolled client is a
+perfectly good instrument for measuring somebody else's server, and it is now
+`mcp.the-ecosystem-still-needs-a-handshake`. The **server** direction is real, tested, and
+untouched by all of this — including its own `initialize` shim for pre-stateless *clients*, which
+is a different mechanism that does exist.
+
+**Why the producer lint missed it.** It sweeps enum variants — `Warning`, `EventKind`, `RunError`,
+`Item`, `Effect` — and `ServerIdentity::stateless` is a struct field. Same defect shape as I-001 and
+I-003, one type constructor away from the detector built for it. A field-level orphan check would
+catch this class and does not exist.
+
+**Three claims retracted**, one added, and `claims.toml` goes from 1 `operated` row to 1 different
+`operated` row. The count did not move; what it rests on did.
+
+---
+
 ## Open
 
 - **No `frey_rev` in any historical record.** Everything before today is attributable to "frey",

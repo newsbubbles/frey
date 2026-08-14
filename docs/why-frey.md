@@ -131,10 +131,10 @@ no incidents is indistinguishable from a project with no instruments.
 - Every warning a caller can read is also one an event-stream watcher can see
 - A public variant Frey is supposed to emit and never does is caught in CI by a producer lint
 
-**MCP**
-- Speaks `2026-07-28` — no handshake, no session id, `server/discover`
-- Frey can *be* an MCP server, not only call one, from the same `Toolset`
+**MCP — read the retracted list below before planning around the client**
+- Frey can *be* an MCP server, not only call one, from the same `Toolset` — this half is solid
 - Approval that survives a stateless round trip
+- Speaks `2026-07-28`: no handshake, no session id, `server/discover`
 - A server reordering its listing cannot churn your cache; a server adding a tool is reported
 
 **Type-level integrity**
@@ -159,6 +159,11 @@ Lookback checking · OpenRouter breakpoints for `anthropic/*` · agent-CLI deleg
 - Human approval inside `Agent::run` · media items · unattended operation
 
 ### Retracted — do not use Frey for these
+- **The MCP client cannot connect to a real server today.** `McpClient` ships no `Transport` outside
+  `#[cfg(test)]`, and the advertised shim for pre-stateless servers does not exist — `negotiate()`
+  writes `stateless: false` and nothing reads it, so `initialize` is never sent. Since 0 of 6
+  reachable third-party servers speak the stateless revision, that is every real server tested. The
+  **server** direction is unaffected. [I-011](../notes/INCIDENTS.md).
 - **No spend cap.** There is no `max_cost` anywhere in thirteen crates. Use a provider-side ceiling.
 - **Sandbox confinement** — the policy layer is pure and tested; the confinement claim is withdrawn
 - **A2A** · **local code-mode execution** (models will not write a restricted mini-language;

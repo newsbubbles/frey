@@ -1,13 +1,22 @@
-//! Connect Frey's MCP client to servers Frey did not write.
+//! Measure what MCP servers in the wild actually do.
 //!
-//! Every claim in `docs/mcp.md` rests on `FakeToolset` and on frey's own server answering frey's own
-//! client over a loopback. That is a real test of the code and no test at all of the *protocol*: a
-//! client and a server written by one author on one afternoon agree about everything, including
-//! their shared misreadings.
+//! **This does not use Frey's MCP client, and the first version of this doc comment said it did.**
+//! `xtask` does not depend on `frey-mcp`; the JSON-RPC below is hand-rolled. That is not laziness —
+//! `McpClient` ships no `Transport` outside `#[cfg(test)]`, so there was nothing here to call. But
+//! the label mattered: a claim in `claims.toml` was marked `operated` on this output as though it
+//! measured Frey. It measures the ecosystem. See I-011.
 //!
-//! This runs the client against real third-party stdio servers — the ones a person would actually
-//! reach for — and records what each one does. It costs nothing: **no inference is involved**, only
-//! `server/discover`, `tools/list`, and a listing round-trip.
+//! A hand-rolled client is a perfectly good instrument for measuring somebody else's server. It is
+//! not one for measuring ours, and the two questions are now kept apart.
+//!
+//! The reason to ask the ecosystem question at all: every claim in `docs/mcp.md` rests on
+//! `FakeToolset` and on frey's own server answering frey's own client over a loopback. That is a
+//! real test of the code and no test at all of the *protocol* — a client and a server written by
+//! one author on one afternoon agree about everything, including their shared misreadings.
+//!
+//! So this speaks the protocol directly to real third-party stdio servers — the ones a person would
+//! actually reach for — and records what each one does. It costs nothing: **no inference is
+//! involved**, only `server/discover`, `tools/list`, and a listing round-trip.
 //!
 //! What it looks for, in order of what would hurt most:
 //!
@@ -189,6 +198,8 @@ struct Row {
     note: String,
     /// If the listing churned, what changed between the two calls.
     churn_detail: String,
+    /// Where the startup time went.
+    timing: Timing,
 }
 
 impl Row {
@@ -218,6 +229,7 @@ fn probe(target: &Target) -> Row {
         churns: false,
         note: String::new(),
         churn_detail: String::new(),
+        timing: Timing::default(),
     };
 
     // Stateless first, then the legacy handshake — the same order Frey's own client uses, and the
@@ -235,6 +247,7 @@ fn probe(target: &Target) -> Row {
     };
     row.reached = true;
     row.stateless = first.stateless;
+    row.timing = first.timing;
 
     let second = list_tools(target, first.stateless).map(|r| r.tools).unwrap_or_default();
     row.churns = !second.is_empty() && second != first.tools;
@@ -261,6 +274,30 @@ fn probe(target: &Target) -> Row {
 struct Listing {
     stateless: bool,
     tools: Vec<serde_json::Value>,
+    timing: Timing,
+}
+
+/// Where the seconds in "MCP startup is slow" actually go.
+///
+/// The interesting question is not the total. It is the **split**: `spawn` is the cost of starting
+/// somebody else's process — `npx -y` resolving a package, a Python interpreter importing an SDK —
+/// and no client library can make it smaller. `handshake` and `list` are the protocol round trips,
+/// which is the only part a client's design controls.
+///
+/// Frey is built on a revision with no handshake, and the honest way to find out whether that is
+/// worth anything is to measure both halves rather than to assert that one round trip beats two.
+#[derive(Default, Clone, Copy)]
+struct Timing {
+    /// `Command::spawn` returning — the process exists, and has done nothing.
+    spawn_ms: u128,
+    /// Spawn to the first byte of any answer. Interpreter startup and module imports live here.
+    first_byte_ms: u128,
+    /// The `server/discover` or `initialize` round trip on its own.
+    negotiate_ms: u128,
+    /// The `tools/list` round trip on its own.
+    list_ms: u128,
+    /// Spawn to a usable catalog.
+    total_ms: u128,
 }
 
 /// Start the server, ask it for its tools, and stop.
@@ -280,6 +317,7 @@ fn list_tools(target: &Target, try_stateless: bool) -> Result<Listing, String> {
         target.program.to_string()
     };
 
+    let t0 = std::time::Instant::now();
     let mut child = Command::new(&program)
         .args(target.args)
         .stdin(Stdio::piped())
@@ -290,6 +328,7 @@ fn list_tools(target: &Target, try_stateless: bool) -> Result<Listing, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not start `{program} {}`: {e}", target.args.join(" ")))?;
+    let mut timing = Timing { spawn_ms: t0.elapsed().as_millis(), ..Timing::default() };
 
     // **A watchdog, because a server that never answers must be a row in the table rather than a
     // sweep that never ends.** One of the eight sat waiting on a first run and took the whole run
@@ -342,25 +381,37 @@ fn list_tools(target: &Target, try_stateless: bool) -> Result<Listing, String> {
     }
     send(&serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))?;
 
+    // Everything is written before anything is read, so these are not clean per-call RTTs and the
+    // table says so. What they do separate cleanly is process startup from protocol work, which is
+    // the split the question is actually about.
     let mut tools = Vec::new();
     let mut line = String::new();
+    let mut first_byte_seen = false;
     for _ in 0..64 {
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
+        if !first_byte_seen {
+            first_byte_seen = true;
+            timing.first_byte_ms = t0.elapsed().as_millis();
+        }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
         if value.get("id") == Some(&serde_json::json!(1)) && value.get("result").is_some() {
             stateless = try_stateless;
+            timing.negotiate_ms = t0.elapsed().as_millis().saturating_sub(timing.first_byte_ms);
         }
         if value.get("id") == Some(&serde_json::json!(2))
             && let Some(list) = value.pointer("/result/tools").and_then(|t| t.as_array())
         {
             tools = list.clone();
+            timing.list_ms =
+                t0.elapsed().as_millis().saturating_sub(timing.first_byte_ms + timing.negotiate_ms);
             break;
         }
     }
+    timing.total_ms = t0.elapsed().as_millis();
 
     let complaint = child.stderr.take().map(read_briefly).unwrap_or_default();
     let _ = child.kill();
@@ -374,7 +425,7 @@ fn list_tools(target: &Target, try_stateless: bool) -> Result<Listing, String> {
             complaint
         });
     }
-    Ok(Listing { stateless, tools })
+    Ok(Listing { stateless, tools, timing })
 }
 
 /// Name what changed between two identical listings.
@@ -534,6 +585,49 @@ fn render(rows: &[Row]) -> String {
     }
 
     let reached: Vec<&Row> = rows.iter().filter(|r| r.reached).collect();
+
+    if !reached.is_empty() {
+        out.push_str("\n## Where MCP startup time goes\n\n");
+        out.push_str(
+            "Milliseconds, cold, one sample each — indicative, not a benchmark.\n\n`spawn` is \
+             `Command::spawn` returning. **`to first byte`** is everything before the server says \
+             anything: interpreter startup, `npx`/`uvx` package resolution, module imports — plus \
+             the first round trip, since the first line read *is* the answer to `server/discover`. \
+             `list` is the `tools/list` round trip after that.\n\n`negotiate` reads 0 for every row, \
+             and that is a property of these servers rather than a fast path: none of them answers \
+             `server/discover`, so there is never a successful negotiation to time and its cost is \
+             already inside `to first byte`.\n\n",
+        );
+        out.push_str("| server | spawn | to first byte | negotiate | list | total |\n");
+        out.push_str("|---|---|---|---|---|---|\n");
+        for row in &reached {
+            out.push_str(&format!(
+                "| {} | {} | **{}** | {} | {} | {} |\n",
+                row.name,
+                row.timing.spawn_ms,
+                row.timing.first_byte_ms,
+                row.timing.negotiate_ms,
+                row.timing.list_ms,
+                row.timing.total_ms,
+            ));
+        }
+        let protocol: u128 = reached.iter().map(|r| r.timing.negotiate_ms + r.timing.list_ms).sum();
+        let before: u128 = reached.iter().map(|r| r.timing.first_byte_ms).sum();
+        if before + protocol > 0 {
+            out.push_str(&format!(
+                "\n**{before} ms of this happens before any server says a word; {protocol} ms is \
+                 protocol.** The first number belongs to somebody else's process starting up and is \
+                 the same for every framework in every language. The second is the only part a \
+                 client's design controls.\n\nThe conclusion is unwelcome if you were hoping the \
+                 stateless revision is a speed feature. It is not: skipping a handshake saves one \
+                 round trip out of the {protocol} ms that every round trip here costs put together. \
+                 **Statelessness is a scaling property — any replica can serve any request, with no \
+                 session affinity — and selling it as latency would be selling a rounding \
+                 error.**\n"
+            ));
+        }
+    }
+
     let stateless = reached.iter().filter(|r| r.stateless).count();
     out.push_str(&format!(
         "\n## The headline\n\n**{stateless} of {} servers that answered speak the `2026-07-28` \
@@ -587,6 +681,7 @@ mod tests {
             churns: false,
             note: "ImportError".into(),
             churn_detail: String::new(),
+            timing: Timing::default(),
         };
         let table = render(&[row]);
         let line =

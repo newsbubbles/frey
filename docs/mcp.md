@@ -1,7 +1,22 @@
 # MCP
 
-Frey speaks the **stateless `2026-07-28` revision**, in both directions, with a shim for older
-servers.
+Frey speaks the **stateless `2026-07-28` revision** in both directions.
+
+> **Read this before planning around the client.** Two things this page claimed and that are not
+> true, found on 2026-08-14 and recorded as [I-011](../notes/INCIDENTS.md):
+>
+> 1. **There is no shipped `Transport`.** `McpClient` is generic over one, and both implementations
+>    in this repository are inside `#[cfg(test)]`. There is no stdio transport and no HTTP
+>    transport. Connecting to a real server means writing one yourself.
+> 2. **There is no client-side shim for older servers.** `negotiate()` correctly identifies a
+>    pre-stateless server from its method-not-found, sets `ServerIdentity::stateless = false`, and
+>    then nothing reads that field. `initialize` and `notifications/initialized` are never sent by
+>    the client. Since the conformance sweep found **0 of 6** reachable third-party servers speaking
+>    the stateless revision, that means the client cannot currently list tools from any real server
+>    tested.
+>
+> The **server** direction is real, tested, and unaffected — including its own `initialize` shim for
+> pre-stateless *clients*, which is a different thing that does exist.
 
 ## What changed in this revision
 

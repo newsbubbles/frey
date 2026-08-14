@@ -200,7 +200,8 @@ cargo run -p frey-cli -- doctor
 
 **MCP `2026-07-28`** removed the stateful core of the protocol — no handshake, no session id, no SSE
 resumability — and replaced server-initiated requests with a retry pattern. Frey is built on that
-revision, with a shim for older servers, and treats an MCP server as the untrusted party it is:
+revision — **in the server direction only; see the limitation below** — and treats an MCP server as
+the untrusted party it is:
 listings are re-sorted defensively so a server cannot churn your prompt cache, freshness hints are
 capped, and catalogs are private unless the server says otherwise.
 
