@@ -231,6 +231,42 @@ code shares its blind spot**, which is the same reason the capability audit miss
 
 ---
 
+### I-010 · Three defects in the sweep's own output, found by reading its output
+
+**found_by: code-reading** · frey/xtask · severity: medium
+
+The full ten-target sweep ran, the table was generated, and reading the generated table found three
+things about the generator. All three are the same shape as everything else in this file: **a thing
+that presents as a measurement and is not one.**
+
+1. **The four servers that never started were printed as `handshake`, `0`, `0`, `0`, `no`.** The
+   `stateless` column asserted a protocol fact about a Python process that died on an `ImportError`
+   before reading a byte, and the three zeros beside it read as a clean sweep across zero tools. Now
+   `—` in every column a dead process cannot answer for. The headline was already correct — *0 of 6
+   servers **that answered*** — so the file disagreed with itself four rows above its own conclusion.
+
+2. **`results.jsonl` was written with `fs::write`.** It truncated. A file named for a line-per-record
+   format held exactly one line, and every earlier sweep had been erased by the next one — which
+   makes the sentence this whole section is built on, *"the number to watch over the next six months
+   is that column going from 0 to non-zero"*, a number nobody could watch. There was no history to
+   compare against. The claims checker reads the **newest** `day` across all lines and had been
+   right all along; the writer was wrong. Now appends, replacing same-day re-runs so three passes
+   while fixing a renderer leave one row rather than three that look like observations.
+
+3. **The churn line printed both twelve-item lists** and left the reader to diff them by eye. It now
+   names the delta — *gained `simulate-research-query`* — which is the entire bug report.
+
+Two tests pin the first two. The third is cosmetic and has none, which is the honest split.
+
+**Why this one is worth its own entry rather than a line in I-009.** Every defect in I-009 was found
+by six readers pointed at the code. These three were found by looking at *what the instrument
+printed*, an hour later, while doing something else — and the second one is the recurring shape at
+its purest: **a declared capability (a dated time series) with no producer on the path that
+mattered** (a writer that truncates). That is the fourth instance of that exact shape today, and the
+producer lint cannot see this one, because the producer exists and does the wrong thing.
+
+---
+
 ## Open
 
 - **No `frey_rev` in any historical record.** Everything before today is attributable to "frey",

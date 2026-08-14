@@ -130,7 +130,7 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
         rows.iter().filter(|r| r.churns).count(),
         rows.iter().map(|r| r.tools).sum::<usize>(),
     );
-    if let Err(error) = std::fs::write(dir.join("results.jsonl"), record) {
+    if let Err(error) = append_record(&dir.join("results.jsonl"), day, &record) {
         eprintln!("could not write the dated record: {error}");
         return ExitCode::FAILURE;
     }
@@ -141,6 +141,33 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
     let reached = rows.iter().filter(|r| r.reached).count();
     println!("{reached}/{} server(s) answered", rows.len());
     ExitCode::SUCCESS
+}
+
+/// Add today's record to the dated file, replacing today's if the sweep already ran.
+///
+/// **It appended nothing before this.** `fs::write` truncated, so a file named `.jsonl` held exactly
+/// one line and every earlier sweep was gone — which makes the sentence the write-up is built on,
+/// *"the number to watch over the next six months is that column going from 0 to non-zero"*, a
+/// number nobody could watch: there was no history to compare against, only a present reading
+/// wearing a time series' file extension. The claims checker already reads the **newest** `day`
+/// across all lines, so it was the writer that was wrong and not the format.
+///
+/// Same-day re-runs replace rather than accumulate. A sweep run three times while fixing the
+/// renderer should leave one row for that day, not three identical ones that make the record look
+/// like activity.
+fn append_record(path: &Path, day: u64, record: &str) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let today = format!("\"day\": {day},");
+    let mut out: String = existing
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.contains(&today))
+        .fold(String::new(), |mut acc, line| {
+            acc.push_str(line);
+            acc.push('\n');
+            acc
+        });
+    out.push_str(record);
+    std::fs::write(path, out)
 }
 
 /// What one server did.
@@ -376,7 +403,31 @@ fn describe_churn(first: &[serde_json::Value], second: &[serde_json::Value]) -> 
                 b.join(",")
             );
         }
-        return format!("a different set of tools: {} then {}", a.join(","), b.join(","));
+        // Name the *delta*, not both lists. Two twelve-item lists printed side by side make the
+        // reader diff them by eye, and the one word that constitutes the bug report — which tool
+        // appeared — is the one thing that rendering does not say.
+        let gained: Vec<&String> = b.iter().filter(|n| !a.contains(n)).collect();
+        let lost: Vec<&String> = a.iter().filter(|n| !b.contains(n)).collect();
+        let mut parts = Vec::new();
+        if !gained.is_empty() {
+            parts.push(format!(
+                "gained {}",
+                gained.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !lost.is_empty() {
+            parts.push(format!(
+                "lost {}",
+                lost.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        return format!(
+            "a different set of tools between two identical calls — {} (first listing had {}, \
+             second had {})",
+            parts.join("; "),
+            a.len(),
+            b.len()
+        );
     }
 
     // Same names, same order: something inside a definition moved. Name the first field that did.
@@ -404,7 +455,11 @@ fn describe_churn(first: &[serde_json::Value], second: &[serde_json::Value]) -> 
 }
 
 fn elide(text: &str) -> String {
-    let cut: String = text.chars().take(180).collect();
+    elide_at(text, 180)
+}
+
+fn elide_at(text: &str, limit: usize) -> String {
+    let cut: String = text.chars().take(limit).collect();
     if cut.len() < text.len() { format!("{cut}…") } else { cut }
 }
 
@@ -418,7 +473,65 @@ fn read_briefly(mut stderr: std::process::ChildStderr) -> String {
     let _ = stderr.read_to_end(&mut buffer);
     let text = String::from_utf8_lossy(&buffer);
     let last = text.lines().rfind(|l| !l.trim().is_empty()).unwrap_or_default().trim();
-    last.chars().take(160).collect()
+    // Elided rather than hard-cut: the first run of this printed a Windows cache path chopped
+    // mid-directory with nothing to say it had been chopped, which reads as the path itself.
+    elide_at(last, 160)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this file shipped with: a `.jsonl` written by `fs::write`.
+    ///
+    /// Worth a test rather than a fix, because the failure is invisible on any single run — the file
+    /// is present, well-formed, and current, and the only thing wrong with it is that it is the only
+    /// record that has ever existed. A check that reads the newest line passes forever.
+    #[test]
+    fn a_second_sweep_does_not_erase_the_first() {
+        let dir = std::env::temp_dir().join("frey-conformance-record-test");
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let file = dir.join("results.jsonl");
+        let _ = std::fs::remove_file(&file);
+
+        append_record(&file, 100, "{\"day\": 100, \"reached\": 6}\n").expect("first");
+        append_record(&file, 107, "{\"day\": 107, \"reached\": 7}\n").expect("second");
+        let body = std::fs::read_to_string(&file).expect("read");
+        assert_eq!(body.lines().count(), 2, "the earlier sweep is the comparison: {body}");
+        assert!(body.contains("\"day\": 100"), "history was truncated: {body}");
+
+        // A same-day re-run replaces. Three identical rows for one day would read as three
+        // observations, which is the same overclaim in the other direction.
+        append_record(&file, 107, "{\"day\": 107, \"reached\": 8}\n").expect("third");
+        let body = std::fs::read_to_string(&file).expect("read");
+        assert_eq!(body.lines().count(), 2, "same-day re-run accumulated: {body}");
+        assert!(body.contains("\"reached\": 8"), "the re-run did not win: {body}");
+        assert!(body.contains("\"day\": 100"), "replacing today lost history: {body}");
+    }
+
+    /// A server that never started has no protocol behaviour to report.
+    #[test]
+    fn an_unreachable_row_reports_nothing_rather_than_zero() {
+        let row = Row {
+            name: "sqlite",
+            reached: false,
+            stateless: false,
+            tools: 0,
+            bad_schemas: 0,
+            unfindable: 0,
+            churns: false,
+            note: "ImportError".into(),
+            churn_detail: String::new(),
+        };
+        let table = render(&[row]);
+        let line = table
+            .lines()
+            .find(|l| l.starts_with("| sqlite"))
+            .expect("the row is in the table");
+        assert!(!line.contains("handshake"), "asserts a protocol fact it never observed: {line}");
+        assert!(!line.contains(" 0 "), "a zero here reads as a clean sweep: {line}");
+        assert_eq!(line.matches('—').count(), 5, "{line}");
+    }
 }
 
 fn render(rows: &[Row]) -> String {
@@ -434,15 +547,30 @@ fn render(rows: &[Row]) -> String {
          |---|---|---|---|---|---|---|\n",
     );
     for row in rows {
+        // **A server that never answered gets `—` and not `handshake` in every column.** The first
+        // version of this printed `handshake` for the four Python servers, which is a protocol fact
+        // about a process that died on an `ImportError` before reading a byte — the table asserting
+        // a measurement it does not have, in the one artifact that exists to not do that. `0` in the
+        // tool and defect columns is the same lie more quietly, so those go blank too: zero bad
+        // schemas across zero tools reads as a clean sweep.
+        let unknown = "—";
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} |\n",
             row.name,
             if row.reached { "yes" } else { "no" },
-            if row.stateless { "yes" } else { "handshake" },
-            row.tools,
-            row.unfindable,
-            row.bad_schemas,
-            if row.churns { "**yes**" } else { "no" },
+            match (row.reached, row.stateless) {
+                (false, _) => unknown,
+                (true, true) => "yes",
+                (true, false) => "handshake",
+            },
+            if row.reached { row.tools.to_string() } else { unknown.to_string() },
+            if row.reached { row.unfindable.to_string() } else { unknown.to_string() },
+            if row.reached { row.bad_schemas.to_string() } else { unknown.to_string() },
+            match (row.reached, row.churns) {
+                (false, _) => unknown,
+                (true, true) => "**yes**",
+                (true, false) => "no",
+            },
         ));
     }
     out.push_str(

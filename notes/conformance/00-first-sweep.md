@@ -48,6 +48,11 @@ is a weaker and stranger finding. A single-process double-list would settle whic
 consequence for a cached prompt is identical, because a client reconnecting is exactly what happens
 between agent runs.
 
+**It reproduced.** The sweep was run twice over, an hour apart, for an unrelated reason — a fix to
+the table renderer — and both full runs report the same twelve-then-thirteen with the same tool
+appearing. That moves it from something seen once to something that happens, which is the difference
+between a note and a bug report.
+
 This is the failure Frey's defensive re-sorting exists for, met for the first time — and it is worth
 being precise, because the defence does not actually cover it.
 
