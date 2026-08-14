@@ -6,7 +6,7 @@
 //!
 //! Two rules make the difference between a security feature and security theatre:
 //!
-//! 1. **Fail closed.** If the requested policy cannot be enforced, [`SandboxBackend::spawn`]
+//! 1. **Fail closed.** If the requested policy cannot be enforced, [`SandboxBackend::run`]
 //!    returns an error naming the missing control. There is no quiet best-effort mode.
 //! 2. **Report what was enforced, not what was asked for.** [`SandboxReport::enforced`] is
 //!    populated from what the platform actually did. Landlock's ABI level in particular must be

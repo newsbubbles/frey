@@ -478,62 +478,6 @@ fn read_briefly(mut stderr: std::process::ChildStderr) -> String {
     elide_at(last, 160)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The bug this file shipped with: a `.jsonl` written by `fs::write`.
-    ///
-    /// Worth a test rather than a fix, because the failure is invisible on any single run — the file
-    /// is present, well-formed, and current, and the only thing wrong with it is that it is the only
-    /// record that has ever existed. A check that reads the newest line passes forever.
-    #[test]
-    fn a_second_sweep_does_not_erase_the_first() {
-        let dir = std::env::temp_dir().join("frey-conformance-record-test");
-        std::fs::create_dir_all(&dir).expect("tempdir");
-        let file = dir.join("results.jsonl");
-        let _ = std::fs::remove_file(&file);
-
-        append_record(&file, 100, "{\"day\": 100, \"reached\": 6}\n").expect("first");
-        append_record(&file, 107, "{\"day\": 107, \"reached\": 7}\n").expect("second");
-        let body = std::fs::read_to_string(&file).expect("read");
-        assert_eq!(body.lines().count(), 2, "the earlier sweep is the comparison: {body}");
-        assert!(body.contains("\"day\": 100"), "history was truncated: {body}");
-
-        // A same-day re-run replaces. Three identical rows for one day would read as three
-        // observations, which is the same overclaim in the other direction.
-        append_record(&file, 107, "{\"day\": 107, \"reached\": 8}\n").expect("third");
-        let body = std::fs::read_to_string(&file).expect("read");
-        assert_eq!(body.lines().count(), 2, "same-day re-run accumulated: {body}");
-        assert!(body.contains("\"reached\": 8"), "the re-run did not win: {body}");
-        assert!(body.contains("\"day\": 100"), "replacing today lost history: {body}");
-    }
-
-    /// A server that never started has no protocol behaviour to report.
-    #[test]
-    fn an_unreachable_row_reports_nothing_rather_than_zero() {
-        let row = Row {
-            name: "sqlite",
-            reached: false,
-            stateless: false,
-            tools: 0,
-            bad_schemas: 0,
-            unfindable: 0,
-            churns: false,
-            note: "ImportError".into(),
-            churn_detail: String::new(),
-        };
-        let table = render(&[row]);
-        let line = table
-            .lines()
-            .find(|l| l.starts_with("| sqlite"))
-            .expect("the row is in the table");
-        assert!(!line.contains("handshake"), "asserts a protocol fact it never observed: {line}");
-        assert!(!line.contains(" 0 "), "a zero here reads as a clean sweep: {line}");
-        assert_eq!(line.matches('—').count(), 5, "{line}");
-    }
-}
-
 fn render(rows: &[Row]) -> String {
     let mut out = String::from(
         "# MCP conformance sweep\n\n\
@@ -597,4 +541,58 @@ fn render(rows: &[Row]) -> String {
         reached.len()
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this file shipped with: a `.jsonl` written by `fs::write`.
+    ///
+    /// Worth a test rather than a fix, because the failure is invisible on any single run — the file
+    /// is present, well-formed, and current, and the only thing wrong with it is that it is the only
+    /// record that has ever existed. A check that reads the newest line passes forever.
+    #[test]
+    fn a_second_sweep_does_not_erase_the_first() {
+        let dir = std::env::temp_dir().join("frey-conformance-record-test");
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let file = dir.join("results.jsonl");
+        let _ = std::fs::remove_file(&file);
+
+        append_record(&file, 100, "{\"day\": 100, \"reached\": 6}\n").expect("first");
+        append_record(&file, 107, "{\"day\": 107, \"reached\": 7}\n").expect("second");
+        let body = std::fs::read_to_string(&file).expect("read");
+        assert_eq!(body.lines().count(), 2, "the earlier sweep is the comparison: {body}");
+        assert!(body.contains("\"day\": 100"), "history was truncated: {body}");
+
+        // A same-day re-run replaces. Three identical rows for one day would read as three
+        // observations, which is the same overclaim in the other direction.
+        append_record(&file, 107, "{\"day\": 107, \"reached\": 8}\n").expect("third");
+        let body = std::fs::read_to_string(&file).expect("read");
+        assert_eq!(body.lines().count(), 2, "same-day re-run accumulated: {body}");
+        assert!(body.contains("\"reached\": 8"), "the re-run did not win: {body}");
+        assert!(body.contains("\"day\": 100"), "replacing today lost history: {body}");
+    }
+
+    /// A server that never started has no protocol behaviour to report.
+    #[test]
+    fn an_unreachable_row_reports_nothing_rather_than_zero() {
+        let row = Row {
+            name: "sqlite",
+            reached: false,
+            stateless: false,
+            tools: 0,
+            bad_schemas: 0,
+            unfindable: 0,
+            churns: false,
+            note: "ImportError".into(),
+            churn_detail: String::new(),
+        };
+        let table = render(&[row]);
+        let line =
+            table.lines().find(|l| l.starts_with("| sqlite")).expect("the row is in the table");
+        assert!(!line.contains("handshake"), "asserts a protocol fact it never observed: {line}");
+        assert!(!line.contains(" 0 "), "a zero here reads as a clean sweep: {line}");
+        assert_eq!(line.matches('—').count(), 5, "{line}");
+    }
 }

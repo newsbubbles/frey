@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-frey-core = { path = "../frey-core", version = "0.1.1" }
+frey-core = { path = "../frey-core", version = "0.2.0" }
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -30,11 +30,11 @@ agent-cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/rt"]
 [dev-dependencies]
 pollster = "0.4"
 tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "time"] }
-frey-testkit = { path = "../frey-testkit", version = "0.1.1" }
+frey-testkit = { path = "../frey-testkit", version = "0.2.0" }
 # For the cross-check between the two tables of vendor constants. A dev-dependency only: the
 # adapters must not read their capabilities from the profiles crate, or the two tables become one
 # and the check becomes a tautology.
-frey-context = { path = "../frey-context", version = "0.1.1" }
+frey-context = { path = "../frey-context", version = "0.2.0" }
 
 [lints]
 workspace = true
