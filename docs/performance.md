@@ -51,12 +51,49 @@ costs.**
 Warm, every one of those collapses to one or two microseconds. Segmentation and assembly are the
 two that matter because they are the two that scale with prompt size.
 
-### Read all of it narrowly
+### The catalog is the cost, and the conversation is not
 
-**It is the smallest possible prompt**: one user message, no tools. `build_segments` walks every
-tool definition and every turn in the history, and assembly clones the whole request, so both grow
-with the prompt. A 200-tool catalog over a 50-turn history is the case that actually matters for the
-workload Frey is aimed at, and **it has not been measured.**
+The 12 µs figure is an **empty catalog**. `cargo run --release -p frey --example prompt_scaling`
+measures a prompt that looks like real work, median of nine runs each:
+
+| tools | prompt tokens | overhead µs | segment | assemble |
+|---|---|---|---|---|
+| 0 | 1 | **4** | 0 | 0 |
+| 10 | 531 | 154 | 26 | 93 |
+| 50 | 2,671 | 838 | 182 | 440 |
+| **200** | 10,746 | **~3,300** | ~600 | ~1,600 |
+| 500 | 26,946 | ~9,000 | ~2,300 | ~4,700 |
+
+Close to linear at roughly **16 µs per tool per turn**, stable across repeats (3.0, 3.4, 3.5 ms at
+200 tools). So a 200-tool catalog costs about **3.3 ms of framework overhead per turn** — around
+800× the empty-catalog number, and still about 0.3% of a one-second turn.
+
+And the other axis barely moves:
+
+| turn | prompt tokens | overhead µs |
+|---|---|---|
+| 0 | 10,746 | 2,843 |
+| 10 | 11,746 | 3,008 |
+| 25 | 13,246 | 1,557 |
+
+Twenty-five turns of accumulated history, through the real loop, and overhead does not trend upward
+at all. **A tool catalog is re-segmented, re-hashed and re-cloned on every turn; history grows
+slowly by comparison and the budgeter is already evicting it.** If you are worried about a long
+conversation, worry about the catalog instead.
+
+Two things follow, and neither is an opinion any more:
+
+- **Roughly half of that 3.3 ms is `assemble`**, which is dominated by cloning every tool definition
+  into the request once per turn. The definitions cannot change within a run — the catalog is
+  fetched once — so this is an obvious thing to fix and it now has a number on it.
+- **It is the sharpest argument for progressive disclosure**, which this repository has built and
+  has *not* wired into the loop. The cost of handing a model 200 tools it will not use is 3.3 ms a
+  turn, every turn.
+
+### Read even that narrowly
+
+One machine, one release build, a fake provider. The tool descriptions are synthetic and of uniform
+size; a real catalog with a few enormous schemas in it will not sit exactly on this line.
 
 ### Why overhead is computed by subtraction
 
@@ -122,7 +159,7 @@ printing zeros, because a zero here would be an invented measurement.
 
 | | State |
 |---|---|
-| Overhead on a realistic prompt (many tools, long history) | **Not measured.** The numbers above are the floor, not the figure. |
+| Overhead on a realistic prompt | **Measured** — see above. ~16 µs per tool per turn; history barely matters. |
 | Tail latency under concurrency | **Measured and not explained.** p99 is 40–60× the median and moves a lot between repeats. |
 | Concurrency against a *real* provider | **Not measured.** The sweep uses a sleeping fake, so it says nothing about sockets, TLS or rate limits. |
 | Throughput, memory, allocation counts | Not measured. |

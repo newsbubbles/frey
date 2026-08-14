@@ -628,23 +628,41 @@ shows up as a gap instead of disappearing. Pinned by
 """
 
 [[claim]]
-id = "perf.overhead-is-small-on-a-minimal-prompt"
-claim = "Frey's steady-state per-turn overhead is roughly 12 microseconds."
+id = "perf.overhead-scales-with-the-catalog-not-the-conversation"
+claim = "Frey's per-turn overhead is about 16 microseconds per tool and does not grow with conversation length."
 stated_in = ["docs/performance.md"]
 status = "tested-only"
-settled_by = "test:many_agents_share_one_adapter_and_keep_their_records_apart"
+settled_by = "test:overhead_tracks_the_catalog_and_not_the_history"
 would_settle = """
-Median of 1,024 concurrent runs, release build, one user message and no tools —
-`cargo run --release -p frey --example concurrency`.
+`cargo run --release -p frey --example prompt_scaling`, medians of nine runs: 4 µs at zero tools,
+838 µs at 50, ~3,300 µs at 200, ~9,000 µs at 500 — close to linear, and stable across repeats
+(3.0/3.4/3.5 ms at 200 tools). Twenty-five turns of history accumulated through the real loop moved
+it not at all.
 
-**This row said 282 µs for about an hour**, which was one turn in a cold process and roughly 95%
-first-run cost. See I-013. The first turn really does cost ~280 µs and that is reported separately
-rather than averaged away.
+**This replaces a row that said 12 µs**, which was the empty-catalog case and about 800x off for a
+realistic prompt. The floor was reported as though it were the figure, twice in one day, in two
+different ways: first a cold-start number (I-013) and then an empty-catalog one.
 
-Still `tested-only`, because the prompt is the smallest one possible. `build_segments` walks every
-tool definition and every turn, and assembly clones the request, so both dominant phases scale with
-prompt size. A 200-tool catalog over a 50-turn history is the case that matters and is unmeasured.
-Quoting 12 µs as the number for a real agent would be quoting the easiest case.
+`tested-only` rather than `settled`: one machine, one release build, a fake provider, and synthetic
+tool descriptions of uniform size. A real catalog with a few enormous schemas will not sit exactly
+on this line. What would settle it is the same measurement on a real catalog from real MCP servers,
+which needs the MCP client to be able to connect — see `mcp.client-can-connect`.
+"""
+
+[[claim]]
+id = "perf.assemble-dominates-on-a-large-catalog"
+claim = "About half of Frey's per-turn overhead on a large catalog is cloning the tool definitions into the request."
+stated_in = ["docs/performance.md"]
+status = "tested-only"
+settled_by = "test:overhead_tracks_the_catalog_and_not_the_history"
+would_settle = """
+At 200 tools, `assemble` is ~1,600 µs of ~3,300 µs and `segment` is ~600 µs. The tool catalog is
+fetched once per run and cannot change within it, so cloning every definition into every request is
+work that does not need doing.
+
+Recorded rather than fixed, deliberately: this file is not a to-do list, and a claim about a
+performance defect is worth as much as a claim about a feature. Fixing it means an `Arc` around the
+definitions and a measurement afterwards showing the number moved.
 """
 
 [[claim]]

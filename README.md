@@ -18,8 +18,8 @@ run. The pieces are real and tested; calling them is currently yours to do. Reco
 > criticise; it has not been run in production by anyone, including its author.
 >
 > Every claim on this page has a row in **[`claims.toml`](claims.toml)** with a status and a link to
-> whatever stands behind it, checked on every push. Today that is **60 rows: 29 settled by a named
-> test, 1 operated, 5 tested-only, 15 unevidenced, and 10 retracted** — retracted meaning the claim
+> whatever stands behind it, checked on every push. Today that is **61 rows: 29 settled by a named
+> test, 1 operated, 6 tested-only, 15 unevidenced, and 10 retracted** — retracted meaning the claim
 > was made here and is now withdrawn, kept in the file because deleting it would hide that it was
 > ever made.
 >
@@ -27,7 +27,7 @@ run. The pieces are real and tested; calling them is currently yours to do. Reco
 > servers do, which costs nothing to run and expires in 120 days. It says nothing about Frey — an
 > earlier version of this paragraph claimed it did, which is [I-011](notes/INCIDENTS.md).
 > **Nobody has run Frey unattended, including its author** — `operating.unattended` is unevidenced
-> and the thirty-night record that would settle it has not started. 506 tests pass; a passing test
+> and the thirty-night record that would settle it has not started. 508 tests pass; a passing test
 > is not an operating hour and the file does not let the two be confused.
 >
 > That split is the point of the file rather than an admission inside it. A README is a snapshot and

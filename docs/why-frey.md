@@ -89,7 +89,7 @@ Frey ships [`claims.toml`](../claims.toml) — every claim in its README and doc
 and a link to whatever stands behind it, **checked in CI on every push**. A test that gets renamed
 unsettles the claim that cited it. Evidence with a date on it expires.
 
-Today: **60 rows — 29 settled by a named test, 1 operated, 5 tested-only, 15 unevidenced, 10
+Today: **61 rows — 29 settled by a named test, 1 operated, 6 tested-only, 15 unevidenced, 10
 retracted.** The retracted ones are claims this repository made and withdrew; they are kept in the
 file because deleting them would hide that they were ever made.
 
@@ -145,9 +145,9 @@ no incidents is indistinguishable from a project with no instruments.
 **Knowing what it costs you**
 - Every turn reports where its wall-clock went, split into Frey's phases and the two that are not
   Frey's — the provider wait and your tools. `frey timings <journal>` reads it back across a run.
-  **~12 µs of framework overhead per turn** warm, ~280 µs on the first turn of a process, *on the
-  smallest possible prompt* — see [performance](performance.md), where the caveats are the
-  important half.
+  **~16 µs per tool per turn** — about 3.3 ms on a 200-tool catalog, and *flat* across a 25-turn
+  conversation. The catalog is the cost; the conversation is not. See
+  [performance](performance.md).
 - **The median does not degrade from 1 to 1,024 concurrent agents** on one shared adapter. The p99
   does, by 40–60×, and that is written down rather than omitted.
 
@@ -205,6 +205,6 @@ who already knows about them*. The pre-registered A/B that would settle it is in
 [`notes/plan/STATUS.md`](../notes/plan/STATUS.md), with a control arm of one hand-placed breakpoint
 rather than zero, because three independent readers called the zero arm a strawman.
 
-And `operating.unattended` is unevidenced too. 506 tests pass. **Nobody has run Frey unattended,
+And `operating.unattended` is unevidenced too. 508 tests pass. **Nobody has run Frey unattended,
 including its author.** A passing test is not an operating hour, and the whole apparatus above
 exists so those two things cannot be quietly confused.
