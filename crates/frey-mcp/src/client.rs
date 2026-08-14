@@ -384,6 +384,46 @@ mod tests {
     }
 
     #[test]
+    fn a_server_that_grows_a_tool_between_listings_is_reported_rather_than_hidden() {
+        // **Taken from a real server.** `@modelcontextprotocol/server-everything`, listed twice in
+        // a row with nothing in between, returns twelve tools and then thirteen — the extra one is
+        // `simulate-research-query`. Found by `cargo xtask conformance`, the first time this
+        // client had ever spoken to a server it did not write. See `notes/conformance/`.
+        //
+        // The defensive re-sort does **not** cover this and is not supposed to. Sorting a list that
+        // gained an element still yields a different list; the tool block rehashes and the cached
+        // prefix is rewritten. Hiding the new tool to protect a cache would be strictly worse — a
+        // client that conceals a server's capabilities is a client nobody can reason about.
+        //
+        // So the contract is: reordering is *prevented*, membership change is *reported*. The
+        // cache planner sees a different tool-block hash and raises `Warning::CacheChurn`, whose
+        // advice for `SegmentKind::Tools` names this exact case. This test pins the half that must
+        // not be quietly "fixed" into suppression.
+        let twelve = serde_json::json!([
+            {"name": "echo", "description": "echo back", "inputSchema": {"type": "object"}},
+            {"name": "get-env", "description": "read env", "inputSchema": {"type": "object"}}
+        ]);
+        let thirteen = serde_json::json!([
+            {"name": "echo", "description": "echo back", "inputSchema": {"type": "object"}},
+            {"name": "get-env", "description": "read env", "inputSchema": {"type": "object"}},
+            {"name": "simulate-research-query", "description": "appears late",
+             "inputSchema": {"type": "object"}}
+        ]);
+
+        let before = FakeServer::new(vec![listing(twelve, serde_json::json!({}))]);
+        let after = FakeServer::new(vec![listing(thirteen, serde_json::json!({}))]);
+        let first = pollster::block_on(McpClient::new("ev", &before).list_tools()).unwrap();
+        let second = pollster::block_on(McpClient::new("ev", &after).list_tools()).unwrap();
+
+        assert_eq!(first.tools.len(), 2);
+        assert_eq!(second.tools.len(), 3, "a tool that appeared must appear");
+        assert!(
+            second.tools.iter().any(|t| t.name.as_str() == "ev_simulate-research-query"),
+            "the client must not conceal a capability to protect a cache"
+        );
+    }
+
+    #[test]
     fn tools_are_namespaced_by_server_so_two_servers_cannot_collide() {
         let tools = serde_json::json!([
             {"name": "search", "description": "search things", "inputSchema": {"type": "object"}}

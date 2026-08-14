@@ -25,11 +25,25 @@ enters your configuration, a struct, or a log line.
 
 | | Anthropic | OpenAI Responses | OpenRouter |
 |---|---|---|---|
-| Caching | explicit, ≤4 breakpoints | automatic ≥1024 tokens | passthrough, varies by upstream |
+| Caching | explicit, ≤4 breakpoints | automatic ≥1024 tokens | automatic, upstream's |
+| **Breakpoints Frey places** | **4** | **0** | **0** |
 | Min cacheable prefix | 512–4096, **per model** | 1024 | upstream's |
 | `input_tokens` | excludes cached | includes cached | normalised to exclude |
 | Reports cost | no | no | **yes** |
 | Reasoning | — | encrypted, must be replayed | upstream's |
+
+**Read the breakpoint row before planning around the cache planner.** Only one of the three dialects
+takes explicit breakpoints. On the other two the provider caches the prefix itself, so there is
+nothing for Frey to place and it places nothing — and the planner's *warnings* are what it
+contributes there: churn and minimum-prefix, both of which cost exactly as much on an
+automatic-caching provider.
+
+That row comes from a measurement, not from this table. `frey doctor` encodes a representative
+request through each adapter and counts the `cache_control` markers that come out, and a test
+asserts the invariant that an adapter accepting breakpoints must emit them. It found two bugs on its
+first run: the Anthropic adapter honoured only the last mark of a four-mark plan, and the Responses
+adapter declared an explicit mode the API does not have — so the planner placed a breakpoint on every
+OpenAI request and the adapter dropped it, silently, while the plan reported it as placed.
 
 **Anthropic's minimum cacheable prefix varies eightfold between models from one vendor** — 512 on
 Opus 5, 4096 on Haiku 4.5. A prompt that caches fine on one silently does not cache at all on the
@@ -37,7 +51,10 @@ other, with no error from anyone. Frey's profiles carry this per model.
 
 **Anthropic search only 20 content blocks backward from a breakpoint.** A single agentic turn with
 several tool calls can exceed that, making the *next* request miss cache entirely. Frey warns:
-`LookbackExceeded { blocks, limit }`.
+`LookbackExceeded { blocks, limit }` — and the check takes a block count and no capabilities, so it
+applies Anthropic's 20 to every provider, including ones with no published figure. That is an
+overreach in the warning's wording rather than in its arithmetic, and it is recorded as such in
+`claims.toml`.
 
 **OpenRouter always reports `cost`,** and is the only supported provider that does. Frey never
 invents a number a provider did not give: `run.cost` is `None` rather than zero, because a zero in a

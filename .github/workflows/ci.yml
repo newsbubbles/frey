@@ -23,6 +23,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  claims:
+    name: producers · claims
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Two checks about the codebase rather than about its behaviour, which is why neither is a
+      # unit test: both need to read the whole tree, and a test in one crate cannot.
+      #
+      # `producers` fails on a public variant Frey is supposed to emit and never does. Every
+      # capability bug this project has had was that shape, including one that survived an audit
+      # whose own method was finding exactly it.
+      #
+      # `claims` resolves every row of claims.toml to a named test that still exists or to dated
+      # evidence inside its window — not to a file that exists, which would go green forever while
+      # the claims underneath it rotted.
+      - run: cargo run -p xtask -- check
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

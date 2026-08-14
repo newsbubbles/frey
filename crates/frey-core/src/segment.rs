@@ -62,7 +62,11 @@ impl serde::Serialize for ContentHash {
 impl<'de> serde::Deserialize<'de> for ContentHash {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
-        let hex = <&str as serde::Deserialize>::deserialize(d)?;
+        // `Cow`, not `&str`. A borrowed `&str` only deserialises from a source the deserialiser can
+        // borrow out of, so a hash nested in a struct read back from a JSONL file failed with
+        // "expected a borrowed string" — a journal that serialised perfectly and would not load.
+        let hex = <std::borrow::Cow<'_, str> as serde::Deserialize>::deserialize(d)?;
+        let hex = hex.as_ref();
         if hex.len() != 64 {
             return Err(D::Error::custom(format!(
                 "a content hash is 64 hex characters, got {}",

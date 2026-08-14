@@ -1,0 +1,501 @@
+## What this repository says about itself, and what stands behind each claim.
+##
+## Checked on every push by `cargo xtask claims`. The check is on the *evidence*, not on the file:
+## a `test:` row must resolve to a test that still exists under that name, and a `results:` row must
+## resolve to a dated record inside its own staleness window. A checker that verified paths existed
+## would go green forever while every claim underneath it decayed.
+##
+## Status ladder, weakest to strongest:
+##
+##   retracted     — claimed, wrong, withdrawn. Kept, because a retraction that is deleted is a
+##                   retraction nobody can check.
+##   declared-only — a type, a trait or a document exists and nothing produces it. Published as
+##                   UNEVIDENCED. This is the honest state of about a third of the ladder's rungs
+##                   and the reason the table is worth having.
+##   tested-only   — tests pass and nothing has run it in anger.
+##   settled       — a named test proves it and CI runs that test.
+##   operated      — a running system has demonstrated it, with a timestamped record that expires.
+##
+## `operated` is the only status this project cannot yet award itself. That is the whole point of
+## the evidence programme in `notes/plan/EVIDENCE-PLAN.md`, and every row below that could become
+## `operated` says what would do it.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The wedge: context as a managed resource
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "cache.churn-detected"
+claim = "A segment that claims to be stable and changed is reported, with what it costs."
+stated_in = ["README.md#1", "docs/context-and-caching.md"]
+status = "settled"
+settled_by = "test:a_clock_in_the_system_prompt_is_named_and_priced"
+
+[[claim]]
+id = "cache.churn-on-automatic-providers"
+claim = "Churn is reported on providers that cache automatically, where there is no breakpoint to move."
+stated_in = ["docs/context-and-caching.md"]
+status = "settled"
+settled_by = "test:churn_is_reported_on_a_provider_that_caches_automatically"
+
+[[claim]]
+id = "cache.below-min-prefix"
+claim = "A prefix below the model's minimum is reported rather than silently not cached."
+stated_in = ["README.md#1"]
+status = "settled"
+settled_by = "test:a_prefix_below_the_models_minimum_is_reported_rather_than_silently_wasted"
+
+[[claim]]
+id = "cache.marks-reach-the-wire"
+claim = "A dialect that accepts cache breakpoints puts them in the request it sends."
+stated_in = ["docs/providers.md"]
+status = "settled"
+settled_by = "test:every_dialect_that_accepts_breakpoints_actually_emits_them"
+
+[[claim]]
+id = "cache.four-breakpoints-on-anthropic"
+claim = "An Anthropic plan places up to four breakpoints, including one on the tool block."
+stated_in = ["README.md#1", "docs/providers.md"]
+status = "settled"
+settled_by = "test:anthropic_realises_the_whole_plan_and_not_just_its_last_mark"
+
+[[claim]]
+id = "cache.lookback"
+claim = "A turn that adds more blocks than the provider looks back through is reported."
+stated_in = ["README.md#1"]
+status = "tested-only"
+would_settle = """
+`check_lookback` takes a block count and no capabilities, so it applies Anthropic's documented
+figure of 20 to every provider including ones with no published number. Settling it means either a
+per-provider figure with a source, or renaming the warning to say whose limit it is.
+"""
+
+[[claim]]
+id = "cache.saves-money"
+claim = "The planner beats what a competent developer would place by hand."
+stated_in = ["README.md#1"]
+status = "declared-only"
+would_settle = """
+An A/B against a *hand-placed breakpoint after the system prompt* — not against zero breakpoints,
+which is a strawman that decides the result before the first call. Measured on
+`cache_creation_input_tokens` / `cache_read_input_tokens`, which are ground truth, rather than on
+dollars, which would be validated against Frey's own price table. Gated on an Anthropic-family
+model, since OpenRouter emits identical bytes for both arms. See EVIDENCE-PLAN §"Day 90".
+"""
+
+[[claim]]
+id = "cache.estimates-are-reconciled"
+claim = "Frey compares its own token estimate against what the provider counted, and says so when they disagree."
+stated_in = ["docs/context-and-caching.md"]
+status = "settled"
+settled_by = "test:an_estimate_far_from_the_provider_count_is_reported"
+
+[[claim]]
+id = "cache.estimates-are-close"
+claim = "The estimate is close enough for the decisions made from it."
+stated_in = ["docs/context-and-caching.md"]
+status = "declared-only"
+would_settle = """
+Reconciliation now happens on every turn and the error is on the trace; what does not exist yet is
+the *distribution* over enough real calls to say whether `len / 4` is good enough, and on which
+models it is not. Ten thousand real calls with the error recorded settles it, and that comes free
+with the nights once the substrate is running.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nothing degrades quietly
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "degradation.route-change"
+claim = "A router substituting the model mid-run is reported."
+stated_in = ["docs/providers.md"]
+status = "settled"
+settled_by = "test:a_router_substituting_the_model_mid_run_is_reported"
+
+[[claim]]
+id = "degradation.run-always-finishes"
+claim = "Every run closes its event stream, including the ones that fail."
+stated_in = ["docs/agent-loop.md"]
+status = "settled"
+settled_by = "test:a_fatal_provider_failure_ends_the_run_rather_than_retrying"
+
+[[claim]]
+id = "degradation.journal-survives-failure"
+claim = "A run that dies mid-flight carries its record out with the error."
+status = "settled"
+settled_by = "test:a_fatal_provider_failure_ends_the_run_rather_than_retrying"
+
+[[claim]]
+id = "degradation.empty-catalog"
+claim = "An agent presented with no tools says so rather than proceeding quietly."
+status = "settled"
+settled_by = "test:an_empty_catalog_is_reported_even_when_the_host_calls_it_success"
+
+[[claim]]
+id = "degradation.catalog-unreachable"
+claim = "A tool catalog that cannot be listed ends the run rather than becoming an empty one."
+status = "settled"
+settled_by = "test:a_catalog_that_cannot_be_listed_ends_the_run_rather_than_presenting_no_tools"
+
+[[claim]]
+id = "degradation.warnings-reach-both"
+claim = "Every warning a caller can read is also one a watcher of the event stream can see."
+status = "settled"
+settled_by = "test:every_warning_reaches_the_journal_not_just_the_cache_planners"
+
+[[claim]]
+id = "degradation.tool-call-runaway"
+claim = "A response asking for more tool calls than the run permits has the excess refused, individually and readably, rather than dropped."
+stated_in = ["docs/agent-loop.md"]
+status = "settled"
+settled_by = "test:every_warning_reaches_the_journal_not_just_the_cache_planners"
+
+[[claim]]
+id = "degradation.no-producer-lint"
+claim = "A public variant Frey is supposed to emit and never does is caught before it ships."
+status = "settled"
+settled_by = "test:a_variant_that_is_only_matched_on_is_reported"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cost
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "cost.never-invented"
+claim = "Frey never reports a cost figure the provider did not give."
+stated_in = ["README.md#limitations"]
+status = "settled"
+settled_by = "test:a_finished_run_reports_what_it_cost_in_the_event_as_well_as_the_return_value"
+
+[[claim]]
+id = "cost.spend-cap"
+claim = "Frey bounds what a run can spend."
+status = "retracted"
+would_settle = """
+It does not, and no crate contains `max_cost`, `budget_usd` or `spend_cap`. Five projects have now
+hand-rolled one. A per-key ceiling at the provider is free and real; the framework feature can wait
+for a design rather than being implied by a README.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Untrusted data
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "taint.forbidden-flows-do-not-compile"
+claim = "Passing untrusted data where trusted data is required fails to compile."
+stated_in = ["README.md#2", "docs/security-model.md"]
+status = "settled"
+settled_by = "test:zip_meets_integrity_and_joins_confidentiality"
+
+[[claim]]
+id = "taint.endorse-is-auditable"
+claim = "Raising integrity happens in one place, records its call site, and is greppable."
+stated_in = ["docs/security-model.md"]
+status = "settled"
+settled_by = "test:endorse_writes_an_audit_record_pointing_at_the_caller"
+
+[[claim]]
+id = "taint.used-by-a-real-caller"
+claim = "The taint types are load-bearing in a system that is not Frey."
+status = "declared-only"
+would_settle = """
+`Tainted` and `Trusted` appear in deadnet exactly five times, all `Provenance::new(\"test\")` in one
+wiring test. The census is the deliverable here, not a demonstration: one authored payload reaching
+one authored sink is a screenshot. What would settle it is a real sink in a real caller whose
+signature requires high integrity.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Protocol
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "mcp.stateless-revision"
+claim = "Frey speaks MCP 2026-07-28: no handshake, no session id, server/discover."
+stated_in = ["README.md#protocols", "docs/mcp.md"]
+status = "settled"
+settled_by = "test:freys_client_and_freys_server_agree_over_a_loopback"
+
+[[claim]]
+id = "mcp.works-with-servers-frey-did-not-write"
+claim = "Frey's MCP client lists tools from third-party servers it did not write."
+stated_in = ["docs/mcp.md", "notes/conformance/00-first-sweep.md"]
+status = "settled"
+settled_by = "test:a_server_that_grows_a_tool_between_listings_is_reported_rather_than_hidden"
+
+[[claim]]
+id = "mcp.calls-tools-on-third-party-servers"
+claim = "Frey's MCP client can call a tool on a server it did not write."
+status = "declared-only"
+would_settle = """
+The first sweep exercised `tools/list` and stopped there. Calling something is the other half and it
+is nearly free on the servers where a call is side-effect-free — `echo` on `everything`, `get_time`
+on any clock. Until it runs, "works with third-party servers" means "can read their catalogs".
+"""
+
+[[claim]]
+id = "mcp.the-ecosystem-speaks-the-stateless-revision"
+claim = "MCP servers in the wild speak the 2026-07-28 stateless revision Frey is built on."
+stated_in = ["README.md#protocols"]
+status = "retracted"
+would_settle = """
+**Zero of six** servers that answered the first sweep did. All six needed the legacy `initialize`
+handshake. That is not a defect in Frey or in them — the revision is recent — but it means the
+compatibility shim is the only code path that has ever worked against a real server, and it had been
+documented as the fallback.
+
+Re-running the sweep is free, so the number to watch is that column going from 0 to non-zero. It is
+the cheapest available measurement of whether the revision this framework bet on is the one the
+ecosystem adopts.
+"""
+
+[[claim]]
+id = "mcp.listings-cannot-churn-the-cache"
+claim = "A server cannot rewrite your cached prompt prefix by *reordering* its listing."
+stated_in = ["README.md#protocols", "docs/security-model.md"]
+status = "settled"
+settled_by = "test:a_server_that_reorders_its_listing_cannot_churn_the_tool_block"
+
+[[claim]]
+id = "mcp.membership-change-is-reported-not-prevented"
+claim = "A server that adds or removes a tool between listings churns the tool block, and Frey says so rather than hiding it."
+stated_in = ["notes/conformance/00-first-sweep.md"]
+status = "settled"
+settled_by = "test:a_server_that_grows_a_tool_between_listings_is_reported_rather_than_hidden"
+
+
+[[claim]]
+id = "a2a.transport"
+claim = "Agent-to-agent interoperability is first class."
+stated_in = ["README.md#protocols"]
+status = "retracted"
+would_settle = """
+`frey-a2a` is types and a lifecycle with no client, no server and no transport. The README now says
+so. The convergence argument — that MCP elicitation, A2A auth challenges and AG-UI frontend tools
+are one shape — is real and is what made the MCP approval handshake a dozen lines; "first class" was
+overstating two of the three.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The catalog thesis: tools, skills and code-mode as one progressively-disclosed catalog
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "catalog.progressive-disclosure"
+claim = "Tool search, skills and code-mode are three presentations of one disclosed catalog."
+stated_in = ["README.md#limitations", "notes/audit/01-capability-audit.md"]
+status = "declared-only"
+acknowledges_orphan = "EventKind::Discovered"
+would_settle = """
+The machinery is real and tested; `Agent::run` takes a fixed tool list once per run and calls none
+of it. Settling it needs one disclosure path end to end, producing `Item::Discovery` and
+`EventKind::Discovered` on a runtime path.
+
+Deliberately not scheduled. deadnet's Decision 37 declines progressive disclosure *by name* — "a
+fixed tool block is the cacheable shape" — which makes the only real caller evidence *against* it
+for high-volume short-session work. Half the stated wedge stays a design document, labelled here.
+"""
+
+[[claim]]
+id = "catalog.discovery-item"
+claim = "A discovered tool enters the prompt as its own item, after the cache breakpoint."
+status = "declared-only"
+acknowledges_orphan = "Item::Discovery"
+would_settle = "The same disclosure path as `catalog.progressive-disclosure`."
+
+[[claim]]
+id = "codemode.local-execution"
+claim = "Code mode can run a script without delegating to a provider."
+stated_in = ["README.md#limitations"]
+status = "retracted"
+would_settle = """
+`Strategy::Local` has nothing behind it and will until an engine is embedded. abacus established
+this is more limiting than first stated: a model handed a bespoke restricted grammar invents the
+`filter` and `first` that grammar ought to have, so a small executor of your own is not a
+substitute. Delegation is the only working path and the README says so.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Human-in-the-loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "approval.over-mcp"
+claim = "A tool can require approval and resume across a stateless round trip."
+stated_in = ["docs/mcp.md"]
+status = "settled"
+settled_by = "test:a_retry_without_answers_asks_again_rather_than_assuming_approval"
+
+[[claim]]
+id = "approval.in-the-loop"
+claim = "A tool returning NeedsInput inside Agent::run reaches a human."
+stated_in = ["README.md#limitations", "notes/audit/01-capability-audit.md"]
+status = "declared-only"
+acknowledges_orphan = "RunError::NeedsInput"
+would_settle = """
+It does not. `render_outcome`'s catch-all renders it to the model as "This action needs approval
+that was not available" and the run continues. Both halves of the machinery exist; what is missing
+is a handler hook on `Agent`. The fault drill that returns `NeedsInput` from a tool is the witness.
+"""
+
+[[claim]]
+id = "approval.needs-input-event"
+claim = "A run waiting on a human says so in its event stream."
+status = "declared-only"
+acknowledges_orphan = "EventKind::NeedsInput"
+would_settle = "The same handler hook as `approval.in-the-loop`."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Streaming
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "streaming.provider-adapters"
+claim = "The provider adapters decode SSE, including keepalives, split chunks and CRLF."
+stated_in = ["docs/providers.md"]
+status = "settled"
+settled_by = "test:keepalive_comments_before_the_body_do_not_break_parsing"
+
+[[claim]]
+id = "streaming.in-the-loop"
+claim = "The agent loop streams."
+stated_in = ["notes/dogfood/02-external-review.md"]
+status = "declared-only"
+acknowledges_orphan = "EventKind::TextDelta"
+would_settle = """
+`ModelProvider::stream` exists and `Agent::run` calls only `complete`. Matters for a
+human-in-the-loop surface and not for a batch one, which is why it has stayed unbuilt. Three event
+variants exist for it and none is ever constructed.
+"""
+
+[[claim]]
+id = "streaming.reasoning-deltas"
+claim = "Reasoning is streamed to a watcher as it arrives."
+status = "declared-only"
+acknowledges_orphan = "EventKind::ReasoningDelta"
+would_settle = "The same streaming path as `streaming.in-the-loop`."
+
+[[claim]]
+id = "streaming.state-deltas"
+claim = "A frontend can follow agent state as it changes."
+status = "declared-only"
+acknowledges_orphan = "EventKind::StateDelta"
+would_settle = """
+`agui::project` is a serialiser and nothing streams through it. The projection is real and tested;
+what is absent is anything that pushes.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Modalities
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "modalities.media-items"
+claim = "Images and documents travel through the item model."
+status = "declared-only"
+acknowledges_orphan = "Item::Media"
+would_settle = """
+`Item::Media` is declared and no adapter decodes into it, so a vision response arrives as text or as
+`Opaque`. The capability tables report per-model input modalities honestly; the item is the part
+with no producer.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Confinement
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "sandbox.confinement"
+claim = "Cross-platform confinement that fails closed."
+stated_in = ["README.md#limitations", "docs/security-model.md"]
+status = "retracted"
+would_settle = """
+`SandboxBackend` has one implementation, a `#[cfg(test)]` stub. No syscall is made on any platform:
+no Landlock ruleset applied, no Seatbelt profile compiled, no AppContainer created. Nothing is
+confined because nothing is executed — Frey ships no tool that spawns a process. What exists is a
+policy language and a decision procedure, which is genuinely the part worth auditing and is worth
+nothing at runtime until a backend exists.
+"""
+
+[[claim]]
+id = "sandbox.policy-is-pure-and-testable"
+claim = "Whether an exec would be permitted, and what confinement it needs, is a pure function."
+stated_in = ["docs/security-model.md"]
+status = "settled"
+settled_by = "test:path_scopes_match_whole_components"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Operating
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[claim]]
+id = "operating.production"
+claim = "Frey has been run in production."
+stated_in = ["README.md:17-18"]
+status = "retracted"
+would_settle = """
+It has not, by anyone, including its author. Three demonstration projects and thousands of live
+sessions in one simulation are more than nothing and much less than operating experience.
+
+The honest deliverable is not the word "production". It is replacing the README status line with a
+paragraph precise enough that a staff-level reader can check every number in it — and this table
+standing behind it, with a third of its rows still saying UNEVIDENCED.
+"""
+
+[[claim]]
+id = "operating.unattended"
+claim = "Frey runs unattended without a person watching it."
+status = "declared-only"
+would_settle = """
+Thirty consecutive nights of deadnet's existing night loop on a scheduled task, with the durability
+substrate in place, and `notes/INCIDENTS.md` recording every failure with a `found_by` field.
+
+The tripwire is the number that matters: **if by day 21 no incident has been found by the system
+rather than by somebody reading code, the instrument is dead rather than the system healthy.** The
+history makes zero incidents in three weeks implausible — a 145-tool-call runaway found by reading
+an invoice, a model going 4/5 to 0/5 within an hour on unchanged code, four provider errors in one
+night.
+"""
+
+[[claim]]
+id = "operating.agent-cli-delegation"
+claim = "AgentCli delegates to the vendor's own binary and rides an existing subscription."
+stated_in = ["README.md#limitations", "docs/providers.md"]
+status = "tested-only"
+would_settle = """
+The wire format is tested against recorded output and the machine it was written on had no working
+`claude` install, so the end-to-end path has never run. Ten minutes against a real binary converts a
+headline feature from "treat as untested".
+"""
+
+[[claim]]
+id = "operating.no-credentials-leave-frey"
+claim = "Frey never stores, mints or replays a vendor subscription token."
+stated_in = ["docs/providers.md"]
+status = "settled"
+settled_by = "test:frey_supplies_no_credentials"
+
+[[claim]]
+id = "operating.replay-diverges-loudly"
+claim = "Replay reproduces a run exactly and diverges loudly at the first mismatch."
+stated_in = ["README.md#4"]
+status = "settled"
+settled_by = "test:a_changed_system_prompt_is_a_divergence_and_not_a_match"
+
+[[claim]]
+id = "operating.replay-is-reachable-from-the-loop"
+claim = "A recorded run can be replayed through the ordinary agent loop."
+status = "settled"
+settled_by = "test:a_recorded_run_replays_through_the_ordinary_agent_loop"
+
+[[claim]]
+id = "operating.replay-of-an-old-journal"
+claim = "A journal recorded before content hashing existed replays with its prompts compared."
+status = "retracted"
+would_settle = """
+It cannot: the hash was not written down. Such a journal replays for *shape* and reports
+`Divergence::Unknown`, which is logged rather than treated as a match — the honest answer being that
+the prompts were not compared, not that they agreed.
+"""

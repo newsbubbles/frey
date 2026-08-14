@@ -35,13 +35,24 @@ pub struct Anthropic;
 /// The API version header Anthropic require.
 pub const API_VERSION: &str = "2023-06-01";
 
+/// The published minimum cacheable prefix, per model.
+///
+/// **This is the live table.** `frey_context::profiles` has a second one, which is what a reader of
+/// `frey profiles` sees; they are cross-checked by `the_two_min_prefix_tables_agree` because two
+/// tables of vendor constants in one repository will otherwise drift, and the direction they drift
+/// in is silent — a prefix below the minimum is accepted by the API and simply not cached.
+///
+/// The eightfold spread within one vendor is exactly why capabilities are per model rather than per
+/// provider.
 fn min_prefix_for(model: &str) -> u32 {
-    // From the published per-model table. The eightfold spread within one vendor is exactly why
-    // capabilities are per model rather than per provider.
     match model {
         m if m.contains("opus-5") || m.contains("fable-5") || m.contains("mythos-5") => 512,
         m if m.contains("opus-4-6") || m.contains("opus-4-5") || m.contains("haiku-4-5") => 4_096,
         m if m.contains("opus-4-7") || m.contains("haiku-3-5") => 2_048,
+        // Named rather than left to the fallback. Sonnet 5's real figure is 1,024 and the fallback
+        // is also 1,024, so it was right by coincidence — and a coincidence is not a table entry:
+        // changing the fallback for an unknown model would have silently changed Sonnet.
+        m if m.contains("sonnet-5") => 1_024,
         _ => 1_024,
     }
 }
@@ -313,6 +324,38 @@ fn decode_stop(stop: Option<&str>) -> StopReason {
         Some("refusal") => StopReason::Refusal,
         Some(other) => StopReason::Other(other.into()),
         None => StopReason::EndTurn,
+    }
+}
+
+/// The two tables of vendor constants, checked against each other.
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use frey_core::provider_caps::CacheSupport;
+
+    #[test]
+    fn the_two_min_prefix_tables_agree() {
+        // `frey_context::profiles` is what `frey profiles` prints and what most tests plan against;
+        // `min_prefix_for` is what actually decides a live request's capabilities. Nothing connected
+        // them. A repository that carries the same vendor constant twice will drift, and this one
+        // drifts silently: a prefix below the minimum is accepted by the API and not cached, with no
+        // error from anyone.
+        let pairs: &[(&str, frey_core::provider_caps::ProviderCapabilities)] = &[
+            ("claude-opus-5", frey_context::profiles::opus5()),
+            ("claude-sonnet-5", frey_context::profiles::sonnet5()),
+            ("claude-haiku-4-5", frey_context::profiles::haiku45()),
+        ];
+        for (model, profile) in pairs {
+            let live = Anthropic.capabilities(&ModelId::new(*model));
+            let CacheSupport::Explicit { min_prefix_tokens: live_min, .. } = live.cache else {
+                panic!("`{model}` is not an explicit-cache model on the live path");
+            };
+            assert_eq!(
+                Some(live_min),
+                profile.cache.min_prefix_tokens(),
+                "`{model}`: the adapter and the published profile disagree"
+            );
+        }
     }
 }
 

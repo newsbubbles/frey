@@ -10,10 +10,12 @@
 //! the step — silent divergence would make replay worse than useless, since it would produce
 //! confident results about a run that never happened.
 
+use frey_context::hash::hash_parts;
 use frey_core::event::Event;
 use frey_core::ids::{RunId, SeqId};
 use frey_core::item::Item;
 use frey_core::provider::{Response, StopReason};
+use frey_core::segment::ContentHash;
 use frey_core::usage::{Usage, UsageTotals};
 use smol_str::SmolStr;
 
@@ -79,6 +81,51 @@ pub struct RequestFingerprint {
     pub turns: u32,
     /// Which tools were visible, in presentation order.
     pub tools: Vec<SmolStr>,
+    /// A hash of what was actually *in* the prompt.
+    ///
+    /// **This was missing, and its absence made the headline replay claim narrower than it read.**
+    /// The fingerprint was `{model, turns, tools}` — entirely shape. Change the system prompt, keep
+    /// the same number of turns and the same tools, and a journal replayed **green**: divergence
+    /// detection caught a different-looking run and not a different run.
+    ///
+    /// `Option` rather than a plain hash so journals written before this existed still load. `None`
+    /// means *this record predates content hashing*, and it is compared as "unknown" rather than as
+    /// "matches" — see [`RequestFingerprint::diverges_from`], which says which of the two it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentHash>,
+}
+
+/// How two fingerprints differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Divergence {
+    /// Identical, content included.
+    None,
+    /// The shape matches and the content differs: same model, same turn count, same tools, and a
+    /// different prompt.
+    Content,
+    /// Model, turn count or tool list differs.
+    Shape,
+    /// The shape matches and one side has no content hash, so the prompts cannot be compared.
+    ///
+    /// Reported rather than treated as a match. A journal recorded before content hashing existed
+    /// can only be replayed for shape, and a replay that cannot see a difference should say so
+    /// instead of reporting success it has not established.
+    Unknown,
+}
+
+impl RequestFingerprint {
+    /// Compare against what this run is asking for.
+    #[must_use]
+    pub fn diverges_from(&self, other: &Self) -> Divergence {
+        if self.model != other.model || self.turns != other.turns || self.tools != other.tools {
+            return Divergence::Shape;
+        }
+        match (self.content, other.content) {
+            (Some(a), Some(b)) if a == b => Divergence::None,
+            (Some(_), Some(_)) => Divergence::Content,
+            _ => Divergence::Unknown,
+        }
+    }
 }
 
 /// One entry in the journal.
@@ -101,13 +148,19 @@ pub struct Journal {
     /// because they are reconstructible from the final items and would dominate the file.
     #[serde(default)]
     pub events: Vec<Event>,
+    /// Presentation events discarded by [`record_event`](Self::record_event).
+    ///
+    /// `#[serde(default)]` so journals written before this existed still load; a reloaded journal
+    /// reports zero, which is the honest answer — the count was never written down.
+    #[serde(default)]
+    dropped: u64,
 }
 
 impl Journal {
     /// An empty journal for `run`.
     #[must_use]
     pub fn new(run: RunId) -> Self {
-        Self { run, entries: Vec::new(), events: Vec::new() }
+        Self { run, entries: Vec::new(), events: Vec::new(), dropped: 0 }
     }
 
     /// Append an effect, returning its sequence number.
@@ -118,10 +171,27 @@ impl Journal {
     }
 
     /// Append an event worth keeping in the transcript.
+    ///
+    /// Presentation events — text deltas, reasoning deltas, state patches — are **dropped**, and
+    /// the count is kept. A journal is a record of what happened, not a replay of how it looked
+    /// arriving, and keeping every delta would make a long run's transcript mostly typing.
+    ///
+    /// Counting them is the part that was missing. `Warning::EventsDropped` existed to report this
+    /// exact number and nothing had ever produced it, so the one place in the framework that
+    /// deliberately discards data did it silently — in a project whose stated rule is that nothing
+    /// degrades quietly.
     pub fn record_event(&mut self, event: Event) {
         if event.kind.is_semantic() {
             self.events.push(event);
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
         }
+    }
+
+    /// How many presentation events were discarded on the way in.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped
     }
 
     /// How many effects were recorded.
@@ -270,12 +340,24 @@ impl Replay {
             });
         };
 
-        if request != fingerprint {
-            return Err(ReplayError::Diverged {
-                seq: entry.seq,
-                recorded: describe(request),
-                actual: describe(fingerprint),
-            });
+        match request.diverges_from(fingerprint) {
+            Divergence::None => {}
+            Divergence::Unknown => {
+                // Shape matches and the prompts cannot be compared. Allowed to proceed, because
+                // refusing would make every journal written before content hashing unreplayable —
+                // but it is not a clean match and the caller is told which it got.
+                tracing::warn!(
+                    seq = entry.seq.0,
+                    "replaying a journal with no content hash: only the shape of this request was                      checked"
+                );
+            }
+            Divergence::Content | Divergence::Shape => {
+                return Err(ReplayError::Diverged {
+                    seq: entry.seq,
+                    recorded: describe(request),
+                    actual: describe(fingerprint),
+                });
+            }
         }
 
         self.next += 1;
@@ -297,11 +379,40 @@ impl Replay {
 
 fn describe(fingerprint: &RequestFingerprint) -> String {
     format!(
-        "model `{}` with {} turn(s) and tools [{}]",
+        "model `{}` with {} turn(s), tools [{}], content {}",
         fingerprint.model,
         fingerprint.turns,
-        fingerprint.tools.join(", ")
+        fingerprint.tools.join(", "),
+        fingerprint.content.map_or_else(|| "not hashed".to_string(), |h| format!("{h:?}"))
     )
+}
+
+/// Hash what the prompt actually says, not how it is shaped.
+///
+/// Covers the text a dialect will encode and the tool definitions in full, since a description
+/// changing under an unchanged tool *name* is exactly the substitution a shape-only fingerprint
+/// waves through.
+fn content_hash(request: &frey_core::provider::Request) -> ContentHash {
+    let mut parts: Vec<String> = Vec::with_capacity(request.turns.len() + request.tools.len());
+    for tool in &request.tools {
+        parts.push(format!("{}|{}|{}", tool.name, tool.description, tool.input_schema.as_value()));
+    }
+    for turn in &request.turns {
+        let mut rendered = format!("{:?}:", turn.role);
+        for item in &turn.items {
+            match item {
+                Item::Text(text) => rendered.push_str(&text.text),
+                Item::ToolCall(call) => {
+                    rendered.push_str(call.name.as_str());
+                    rendered.push_str(&call.args.to_string());
+                }
+                Item::ToolResult(result) => rendered.push_str(&result.content),
+                _ => {}
+            }
+        }
+        parts.push(rendered);
+    }
+    hash_parts(parts.iter().map(String::as_str))
 }
 
 /// Build a fingerprint from a request.
@@ -311,6 +422,7 @@ pub fn fingerprint(request: &frey_core::provider::Request) -> RequestFingerprint
         model: request.model.as_str().into(),
         turns: u32::try_from(request.turns.len()).unwrap_or(u32::MAX),
         tools: request.tools.iter().map(|t| SmolStr::new(t.name.as_str())).collect(),
+        content: Some(content_hash(request)),
     }
 }
 
@@ -322,6 +434,107 @@ pub fn effect_of(request: &frey_core::provider::Request, response: &Response) ->
         items: response.items.clone(),
         usage: response.usage.clone(),
         stop: response.stop.clone(),
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use frey_core::item::Turn;
+    use frey_core::provider::Request;
+
+    fn request(system: &str) -> Request {
+        Request {
+            model: frey_core::ids::ModelId::new("m"),
+            turns: vec![Turn::system(system), Turn::user("go")],
+            ..Request::default()
+        }
+    }
+
+    #[test]
+    fn a_changed_system_prompt_is_a_divergence_and_not_a_match() {
+        // The finding this test exists to pin. `RequestFingerprint` was `{model, turns, tools}` —
+        // pure shape — so a journal recorded against one persona replayed **green** against a
+        // different one. Divergence detection caught a different-looking run, not a different run,
+        // and the README claimed the second.
+        let recorded = fingerprint(&request("you are a careful assistant"));
+        let asking = fingerprint(&request("you are a reckless assistant"));
+
+        assert_eq!(
+            recorded.turns, asking.turns,
+            "the shape is identical, which was the whole problem"
+        );
+        assert_eq!(recorded.tools, asking.tools);
+        assert_eq!(recorded.diverges_from(&asking), Divergence::Content);
+    }
+
+    #[test]
+    fn an_identical_request_does_not_diverge() {
+        let a = fingerprint(&request("same"));
+        assert_eq!(a.diverges_from(&fingerprint(&request("same"))), Divergence::None);
+    }
+
+    #[test]
+    fn a_journal_written_before_content_hashing_reports_unknown_rather_than_a_match() {
+        // The honest answer for an old recording: the prompts were not compared. Calling that a
+        // match would be the same quiet degradation the content hash was added to remove.
+        let mut old = fingerprint(&request("anything"));
+        old.content = None;
+        assert_eq!(
+            old.diverges_from(&fingerprint(&request("something else"))),
+            Divergence::Unknown
+        );
+    }
+
+    #[test]
+    fn a_recorded_run_replays_through_the_ordinary_agent_loop() {
+        // Replay is reachable from the loop, which it was not: `next_response` had no caller
+        // outside this file and `Agent::run` never mentioned it.
+        use frey_core::provider::ModelProvider as _;
+
+        let mut journal = Journal::new(RunId::new("r"));
+        let req = request("you are a careful assistant");
+        journal.record(Effect::ModelResponse {
+            request: fingerprint(&req),
+            items: vec![Item::text("the recorded answer")],
+            usage: Usage::default(),
+            stop: StopReason::EndTurn,
+        });
+
+        let replaying = Replaying::new(
+            journal,
+            frey_core::provider_caps::ProviderCapabilities::minimal(1_000, 100),
+        );
+        let response = pollster::block_on(replaying.complete(req)).expect("replays");
+        assert_eq!(response.items, vec![Item::text("the recorded answer")]);
+        assert_eq!(
+            replaying.remaining(),
+            0,
+            "nothing left over means the whole run was reproduced"
+        );
+    }
+
+    #[test]
+    fn a_divergence_is_fatal_rather_than_retried() {
+        use frey_core::provider::ModelProvider as _;
+
+        let mut journal = Journal::new(RunId::new("r"));
+        journal.record(Effect::ModelResponse {
+            request: fingerprint(&request("recorded")),
+            items: vec![Item::text("x")],
+            usage: Usage::default(),
+            stop: StopReason::EndTurn,
+        });
+        let replaying = Replaying::new(
+            journal,
+            frey_core::provider_caps::ProviderCapabilities::minimal(1_000, 100),
+        );
+
+        let error = pollster::block_on(replaying.complete(request("different"))).unwrap_err();
+        assert!(
+            format!("{error}").contains("diverged"),
+            "the error must say what happened, not just that something did: {error}"
+        );
     }
 }
 
@@ -487,11 +700,129 @@ mod tests {
 
     #[test]
     fn a_turn_role_change_is_not_mistaken_for_the_same_request() {
+        // **This test used to assert the opposite of its own name.** The fingerprint was shape only
+        // — model, turn count, tool names — so the same turn moved from `User` to `System` matched,
+        // and the test pinned that as "a deliberate limit". It was a limit; it was also the whole
+        // difference between "replay reproduces a run" and "replay reproduces a run that looks like
+        // this one", and the README claimed the first.
         let mut replay = Replay::new(recorded());
         let mut different = request(1, &["fs_read"]);
         different.turns = vec![Turn::new(Role::System, [Item::text("turn 0")])];
-        // Same turn count, so the fingerprint matches: this is a deliberate limit, documented on
-        // `RequestFingerprint`, and it is why divergence checks shape rather than content.
-        assert!(replay.next_response(&fingerprint(&different)).is_ok());
+        assert!(replay.next_response(&fingerprint(&different)).is_err());
     }
 }
+
+/// A [`ModelProvider`] that answers from a recorded journal instead of a network.
+///
+/// **This is what made replay reachable.** `Replay::next_response` had zero callers outside this
+/// file and `Agent::run` never mentioned it, so the capability was real, tested, and reachable only
+/// by a caller willing to write their own loop — which is every caller, since the loop is the
+/// product. Recording was wired; replaying was not.
+///
+/// Now it is an ordinary provider:
+///
+/// ```no_run
+/// # use frey_agent::journal::{Journal, Replaying};
+/// # use frey_agent::run::{Agent, ToolHost};
+/// # fn demo<T: ToolHost>(journal: Journal, tools: T, caps: frey_core::provider_caps::ProviderCapabilities) {
+/// let agent = Agent::new(Replaying::new(journal, caps), tools, "anthropic:claude-opus-5");
+/// // `agent.run(task)` now consumes the recording, and refuses at the first divergence.
+/// # }
+/// ```
+///
+/// Tools **run for real**. That is deliberate and it is the sharp edge: a journal replayed against a
+/// toolset that writes to a database writes to the database again. Replay reproduces the *model*,
+/// which is the non-deterministic and expensive half; supply a read-only toolset if the other half
+/// has side effects you do not want twice.
+#[derive(Debug)]
+pub struct Replaying {
+    inner: std::sync::Mutex<Replay>,
+    caps: frey_core::provider_caps::ProviderCapabilities,
+}
+
+impl Replaying {
+    /// Replay `journal`, presenting `caps` so the budgeter and cache planner behave as they did.
+    ///
+    /// The capabilities are supplied rather than recorded because a journal does not hold them, and
+    /// guessing them would silently change how the prompt was fitted — which would then look like a
+    /// divergence in the run rather than in the harness.
+    #[must_use]
+    pub fn new(journal: Journal, caps: frey_core::provider_caps::ProviderCapabilities) -> Self {
+        Self { inner: std::sync::Mutex::new(Replay::new(journal)), caps }
+    }
+
+    /// How many recorded responses have not been consumed.
+    ///
+    /// A replay that ends with responses left over reproduced a *prefix* of the run, which is not
+    /// the same as reproducing it.
+    ///
+    /// # Panics
+    /// If a previous call panicked while holding the lock.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.inner.lock().expect("replay poisoned").remaining()
+    }
+}
+
+impl frey_core::provider::ModelProvider for Replaying {
+    fn id(&self) -> frey_core::ids::ProviderId {
+        frey_core::ids::ProviderId::new("replay")
+    }
+
+    fn capabilities(
+        &self,
+        _model: &frey_core::ids::ModelId,
+    ) -> frey_core::provider_caps::ProviderCapabilities {
+        self.caps.clone()
+    }
+
+    fn complete(
+        &self,
+        request: frey_core::provider::Request,
+    ) -> impl Future<Output = Result<Response, frey_core::provider::ProviderError>> + Send {
+        let model = request.model.clone();
+        let result = self
+            .inner
+            .lock()
+            .expect("replay poisoned")
+            .next_response(&fingerprint(&request))
+            .map(|(items, usage, stop)| Response {
+                items,
+                usage,
+                stop,
+                model,
+                provider: frey_core::ids::ProviderId::new("replay"),
+            })
+            // A protocol error, which the loop returns rather than retrying: a divergence retried
+            // is a divergence absorbed, and a replay that improvises produces confident results
+            // about a run that never happened.
+            //
+            // Deliberately *not* classified `is_fatal` — that flag means "your key or your billing
+            // is broken, stop the whole program", and a divergence is a fact about this journal.
+            .map_err(|error| frey_core::provider::ProviderError::Protocol {
+                provider: frey_core::ids::ProviderId::new("replay"),
+                detail: error.to_string(),
+            });
+        std::future::ready(result)
+    }
+
+    /// Refused rather than synthesised.
+    ///
+    /// A journal records what a response *was*, not the shape it arrived in. Replaying it as a
+    /// stream would mean inventing a delta sequence that never happened and handing it to a
+    /// consumer that cannot tell the difference — a replay improvising, which is the one thing this
+    /// whole subsystem exists to refuse.
+    fn stream(
+        &self,
+        _request: frey_core::provider::Request,
+    ) -> impl Future<
+        Output = Result<frey_core::provider::EventStream, frey_core::provider::ProviderError>,
+    > + Send {
+        std::future::ready(Err(frey_core::provider::ProviderError::Unsupported {
+            provider: frey_core::ids::ProviderId::new("replay"),
+            capability: "streaming a recorded run".into(),
+        }))
+    }
+}
+
+use std::future::Future;

@@ -29,6 +29,37 @@ A single agentic turn with several tool calls can exceed that, so the *next* req
 entirely. This one was found by an adversarial re-check of the project's own novelty claim, having
 been in the research notes and never implemented.
 
+> `check_lookback` takes a block count and **no capabilities**, so it applies Anthropic's figure of
+> 20 to every provider — including ones with no published number. Read the warning as *this turn was
+> long enough to be a problem on a provider that behaves like Anthropic*, which is the honest reading
+> and not the one the warning's own wording implies.
+
+## Which of this reaches which provider
+
+The planner is one thing and the wire is another, and they are not the same on every dialect.
+`frey doctor` prints this from a **measurement** — each adapter encodes a representative request and
+the `cache_control` markers in the result are counted — rather than from a table that could drift:
+
+| Dialect | Breakpoints Frey places | What still applies |
+|---|---|---|
+| Anthropic | up to 4, including one on the tool block | everything |
+| OpenAI Responses | **none** | churn, minimum prefix, `prompt_cache_key` routing |
+| OpenRouter | **none** | churn, minimum prefix, `session_id` routing |
+
+Two of the three cache **automatically**, so there is no breakpoint to place and Frey places none.
+That is not a gap; it is the provider doing the job. What matters is the second column: on those
+dialects the planner's *marks* do nothing and its *warnings* do everything, because a prompt that
+rewrites its own prefix costs exactly as much on an automatic provider — arguably more, since there
+is not even a breakpoint to move out of the way.
+
+> **This was wrong until recently, in both directions.** Churn detection sat behind an early return
+> that fired whenever the breakpoint budget was zero, which made `CacheChurn` and `BelowMinPrefix`
+> structurally unreachable on every automatic-caching provider — while the one project running Frey
+> in anger uses OpenRouter and names cache churn as the largest threat to its budget. In the other
+> direction, the Responses adapter declared an explicit breakpoint mode the API does not have, so the
+> planner placed a mark on every request and the adapter discarded it. Both were found by asking a
+> question nothing had asked before: *does the plan appear in the bytes we send?*
+
 ## How it works
 
 ```mermaid

@@ -376,7 +376,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
         let definitions = match self.tools.definitions().await {
             Ok(definitions) => definitions,
             Err(source) => {
-                finish(&mut journal, 0, &totals);
+                finish(&mut journal, &mut warnings, 0, &totals);
                 return Err(RunError::ToolCatalog { source, journal: Box::new(journal) });
             }
         };
@@ -409,6 +409,10 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 "gen_ai.system" = %self.provider.id(),
             );
             let _guard = span.enter();
+            journal.record_event(Event::root(
+                SeqId(turn_index),
+                EventKind::TurnStarted { turn: frey_core::ids::TurnId(turn_index) },
+            ));
 
             // 1. Segment the prompt, so budgeting and cache planning have something to reason over.
             let segments = build_segments(&definitions, &turns);
@@ -417,7 +421,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             let fitted = match Budgeter::fit(&segments, &budget) {
                 Ok(fitted) => fitted,
                 Err(source) => {
-                    finish(&mut journal, turn_index, &totals);
+                    finish(&mut journal, &mut warnings, turn_index, &totals);
                     return Err(RunError::Budget { source, journal: Box::new(journal) });
                 }
             };
@@ -454,11 +458,41 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 Err(source) => {
                     // The failure that arrives at three in the morning. Everything the run did
                     // before it leaves with the error rather than going out of scope with it.
-                    finish(&mut journal, turn_index, &totals);
+                    finish(&mut journal, &mut warnings, turn_index, &totals);
                     return Err(RunError::Provider { source, journal: Box::new(journal) });
                 }
             };
             journal.record(effect_of(&request, &response));
+
+            // What Frey guessed the prompt weighed, against what the provider charged for. Free —
+            // both numbers are already here — and the precondition for every token threshold in the
+            // framework meaning anything. `estimate_tokens` is `len / 4`; a minimum-prefix warning
+            // asserted to ±64 tokens inside a ±1000-token estimator error is measuring the
+            // estimator, not the prompt.
+            let estimated: u32 = fitted.keep.iter().map(|segment| segment.est_tokens).sum();
+            let counted = response
+                .usage
+                .input
+                .saturating_add(response.usage.cache_read)
+                .saturating_add(response.usage.cache_write);
+            if counted > 0 {
+                let error = estimator_error_percent(estimated, counted);
+                tracing::info!(estimated, counted, error_percent = error, "frey.estimator");
+                if error.unsigned_abs() > ESTIMATOR_TOLERANCE_PERCENT {
+                    warn(
+                        &mut journal,
+                        &mut warnings,
+                        turn_index,
+                        Warning::Degraded {
+                            capability: "token-estimate".into(),
+                            fallback: format!(
+                                "Frey estimated {estimated} prompt tokens and the provider counted                                  {counted} ({error:+}%); budget and minimum-prefix decisions on                                  this model are being made from a number that far off"
+                            )
+                            .into(),
+                        },
+                    );
+                }
+            }
 
             // Did the router move us? Compared turn to turn rather than against the requested
             // model, because both sides of this comparison come from the provider and so cannot
@@ -530,7 +564,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             turns.push(Turn::new(Role::Assistant, response.items.clone()));
 
             if calls.is_empty() || response.stop == StopReason::EndTurn {
-                finish(&mut journal, turn_index, &totals);
+                finish(&mut journal, &mut warnings, turn_index, &totals);
                 // The same warning on every turn is noise that trains people to ignore warnings.
                 // Each distinct one is reported once, in the order it first appeared.
                 //
@@ -674,7 +708,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             turns.push(Turn::new(Role::User, results));
         }
 
-        finish(&mut journal, self.max_turns, &totals);
+        finish(&mut journal, &mut warnings, self.max_turns, &totals);
         Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
 }
@@ -696,7 +730,13 @@ fn warn(journal: &mut Journal, warnings: &mut Vec<Warning>, turn: u32, warning: 
 /// events needs "this run is over" to mean the run is over; a stream that ends without
 /// [`EventKind::RunFinished`] on the failure paths makes the absence of the event ambiguous between
 /// *still running* and *died*, which is exactly the distinction an unattended night needs.
-fn finish(journal: &mut Journal, turn: u32, totals: &UsageTotals) {
+fn finish(journal: &mut Journal, warnings: &mut Vec<Warning>, turn: u32, totals: &UsageTotals) {
+    // The journal drops presentation events on purpose. Saying how many is the difference between
+    // a deliberate choice and a quiet loss, and the warning for it had never once been constructed.
+    let dropped = journal.dropped();
+    if dropped > 0 {
+        warn(journal, warnings, turn, Warning::EventsDropped { count: dropped });
+    }
     journal.record_event(Event::root(
         SeqId(turn),
         EventKind::RunFinished { totals: totals.clone(), cost: reported_cost(totals) },
@@ -847,6 +887,27 @@ fn build_segments(definitions: &[ToolDefinition], turns: &[Turn]) -> Vec<Segment
 /// would make this crate impure.
 fn estimate_tokens(text: &str) -> u32 {
     u32::try_from(text.len().div_ceil(4)).unwrap_or(u32::MAX)
+}
+
+/// How far past the estimator's error the loop will go before saying so.
+///
+/// Twenty-five percent is not a quality bar — `len / 4` is a rule of thumb and it is wrong by more
+/// than that on code, on CJK text, and on anything with a lot of punctuation. It is the point past
+/// which *decisions made from the estimate* stop being decisions: the budgeter evicts on it and the
+/// planner compares it to a minimum-prefix figure, and neither is meaningful at half a token count.
+const ESTIMATOR_TOLERANCE_PERCENT: u64 = 25;
+
+/// Signed percentage error of the estimate against the provider's own count.
+///
+/// Positive means Frey guessed high. Integer, because this ends up in an `Eq` event and a float
+/// there would make two replays of one run compare unequal on the last bit.
+fn estimator_error_percent(estimated: u32, counted: u64) -> i64 {
+    if counted == 0 {
+        return 0;
+    }
+    let estimated = i64::from(estimated);
+    let counted = i64::try_from(counted).unwrap_or(i64::MAX);
+    (estimated - counted).saturating_mul(100) / counted
 }
 
 #[cfg(test)]
@@ -1242,6 +1303,43 @@ mod tests {
         assert!(
             journal.events.iter().any(|e| matches!(e.kind, EventKind::RunFinished { .. })),
             "the stream must be closed on the failure path too"
+        );
+    }
+
+    #[test]
+    fn the_token_estimate_is_reconciled_against_what_the_provider_counted() {
+        // `estimate_tokens` is `len / 4`. Every response Frey already decodes carries the
+        // provider's own count, and nothing had ever compared the two — so every budget eviction
+        // and every minimum-prefix warning was decided from a number of unknown accuracy, and a
+        // ±64-token assertion inside a ±1000-token error would have been measuring the estimator.
+        assert_eq!(estimator_error_percent(1_000, 1_000), 0);
+        assert_eq!(estimator_error_percent(1_500, 1_000), 50, "guessing high is positive");
+        assert_eq!(estimator_error_percent(500, 1_000), -50);
+        assert_eq!(
+            estimator_error_percent(0, 0),
+            0,
+            "a provider that counted nothing is not an error"
+        );
+    }
+
+    #[test]
+    fn an_estimate_far_from_the_provider_count_is_reported() {
+        let usage = frey_core::usage::Usage {
+            // The prompt is a few dozen bytes, so `len / 4` is small; claiming 100_000 tokens were
+            // charged for is the shape of a tokenizer nothing here models — CJK, or dense code.
+            input: 100_000,
+            ..frey_core::usage::Usage::default()
+        };
+        let model = ScriptedModel::new(vec![Scripted::text("done").with_usage(usage)]);
+        let run =
+            pollster::block_on(Agent::new(model, tools(&[]), "test-model").run("go")).unwrap();
+        assert!(
+            run.warnings.iter().any(|w| matches!(
+                w,
+                Warning::Degraded { capability, .. } if capability == "token-estimate"
+            )),
+            "{:?}",
+            run.warnings
         );
     }
 

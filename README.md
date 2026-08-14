@@ -16,6 +16,12 @@ run. The pieces are real and tested; calling them is currently yours to do. Reco
 
 > **Status: 0.x, pre-release.** The API will change. It is complete enough to build on and to
 > criticise; it has not been run in production by anyone, including its author.
+>
+> Every claim on this page has a row in **[`claims.toml`](claims.toml)** with a status and a link to
+> whatever stands behind it, checked on every push. Roughly a third of those rows currently say
+> UNEVIDENCED. That is the point of the file rather than an admission inside it — a README is a
+> snapshot and code is not, and two claims here were flatly *wrong* for as long as they had been
+> written before an audit found them.
 
 ## Built with it
 
@@ -42,6 +48,12 @@ uncomfortable result.
 It knows each provider's rules — Anthropic's four breakpoints and per-model minimum prefix,
 OpenAI's automatic caching and routing key, OpenRouter's per-upstream split — and it will not place
 a breakpoint on a segment that changed last turn.
+
+**Only Anthropic takes breakpoints.** The other two cache automatically, so there is nothing to
+place and Frey places nothing; what it contributes there is the warnings, which cost exactly as much
+to ignore. `frey doctor` prints the split per dialect, from a measurement rather than a table — each
+adapter encodes a real request and the markers in the result are counted. See
+[the caching model](docs/context-and-caching.md#which-of-this-reaches-which-provider).
 
 ```
 $ cargo run -p frey --example cache_planning
@@ -190,8 +202,12 @@ but "first-class" was overstating two of the three.
 
 ## Honest limitations
 
-- **Nobody has run this in production.** Two demo projects have been built on it and it has been
+- **Nobody has run this in production.** Three demo projects have been built on it and it has been
   driven against live models, which is more than nothing and much less than operating experience.
+  What that would take, what it would cost, and what would count as evidence is written down in
+  [the evidence plan](notes/plan/EVIDENCE-PLAN.md), which is also honest that a careful reader will
+  file all of it as sophisticated dogfooding until something that is not this author's own project
+  depends on it.
 - **The agent-CLI adapter has not been run against a live vendor binary.** `AgentCli` delegates to
   Claude Code so you can ride a subscription instead of paying per token, and its wire format is
   tested against recorded output — but the machine it was written on had no working `claude`
@@ -221,6 +237,13 @@ but "first-class" was overstating two of the three.
   precisely what is missing and refuses to run rather than pretending.
 - **`defer_loading` saves context, not bandwidth.** Anthropic still require every tool definition on
   every request.
+- **Replay compares the prompt, and could not until recently.** `RequestFingerprint` was model, turn
+  count and tool names — pure shape — so a journal replayed *green* after the system prompt changed.
+  It now carries a content hash. A journal recorded before that change replays for shape only and
+  reports so, rather than reporting a match it has not established.
+- **The token estimate is `len / 4`.** Every turn now compares it against the count the provider
+  returned and warns past 25% error, so the number the budgeter evicts on is at least observable.
+  What does not exist yet is the distribution over enough real calls to say where it is bad.
 - **Cost figures are estimates** everywhere except OpenRouter, which is the only supported provider
   that reports what a call cost. Frey never invents a number the provider did not give.
 - **Prompt injection is not solved**, by Frey or anyone. What is here reduces blast radius:
