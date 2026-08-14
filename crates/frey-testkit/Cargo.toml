@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-frey-core = { path = "../frey-core", version = "0.2.0" }
+frey-core = { path = "../frey-core", version = "0.2.1" }
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

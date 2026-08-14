@@ -5,6 +5,94 @@ All notable changes to Frey are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the caveat that `0.x` makes no
 stability promise, and this one means it.
 
+## [0.2.1] — 2026-08-14
+
+**Frey now knows what it costs.** `0.2.0` shipped with no performance numbers at all and a
+`claims.toml` with no performance rows — which at least meant nothing was overclaimed, and meant
+nothing was known either. This release measures it, logs it per turn, and makes it readable back.
+
+It also retracts three claims `0.2.0` made about the MCP client, one of which was in that release's
+own notes.
+
+### Added
+
+- **`EventKind::TurnFinished` carries a `TurnTiming`** — seven phases per turn, into the journal
+  *and* the tracing span, on every turn including the ones that run tools. Five phases are Frey's;
+  two are not, and keeping those apart is the whole point of the type.
+- **`frey timings <journal.jsonl>`** reads it back across a recorded run, in medians. A journal
+  written before this existed reports no data and exits non-zero rather than printing zeros.
+- **Three examples that measure rather than demonstrate**: `turn_timing`, `prompt_scaling`, and
+  `concurrency`, plus `live_concurrency` for a real provider.
+
+### Fixed
+
+- **Every run in a process shared one run id.** `RunId` was `format!("{session}-run")` and
+  `Agent::new` defaults the session to the literal `"default"`, so any caller who did not know to
+  set one got the same id for every run — concurrent or not. Nothing fails at the time; the run id
+  is the primary key for which journal belongs to which run, which `RunStarted` a frontend is
+  following, and which record an incident refers to. Now session, process id and a counter, with
+  the not-globally-unique bound stated on the function. `RequestFingerprint` does not include the
+  run id, so replay is unaffected. **Found by a concurrency test written to measure something else**
+  ([I-012](notes/INCIDENTS.md)).
+- **`provider.complete(request.clone())` billed the clone to the provider.** The argument is
+  evaluated before the future starts, so cloning the entire prompt — every turn — was counted as
+  waiting for the network. Hoisted out and attributed to assembly, where it belongs. On a 200-tool
+  catalog that is about 1.6 ms a turn that had been filed under somebody else's name.
+- **A doc comment naming `SandboxBackend::spawn`,** a method that does not exist, in the crate about
+  failing closed.
+
+### Changed
+
+- **`TurnTiming::overhead_permille` is now `overhead_ppm`.** Per-mille read `0` on every row of the
+  first measurement against a live provider — 30 µs of framework against 800 ms of network rounds to
+  nothing at one part in a thousand. A column of zeros is not a result; it is a unit that cannot
+  express the result, and the fake-provider sweep could never have shown it because its latency was
+  a constant chosen by the author.
+
+### Retracted
+
+Three claims `0.2.0` made, withdrawn ([I-011](notes/INCIDENTS.md)):
+
+- **`McpClient` ships no `Transport`.** Both implementations in the repository are inside
+  `#[cfg(test)]`. There is no stdio transport and no HTTP transport; connecting to a real server
+  means writing one.
+- **There is no client-side shim for older servers.** `negotiate()` identifies a pre-stateless
+  server and writes `stateless: false` into `ServerIdentity`, and nothing reads that field —
+  `initialize` is never sent. Since 0 of 6 reachable third-party servers speak the stateless
+  revision, that is every real server tested.
+- **`mcp.works-with-servers-frey-did-not-write` was `operated` on evidence that never ran the code
+  it was about.** `cargo xtask conformance` hand-rolls JSON-RPC and `xtask` does not depend on
+  `frey-mcp` at all. It measured the ecosystem, which is real and kept as
+  `mcp.the-ecosystem-still-needs-a-handshake`. It measured nothing about Frey. **This claim appeared
+  in the `0.2.0` release notes**, which is why it is repeated here rather than only in the file.
+
+The **server** direction is unaffected: it is real, tested, and includes its own `initialize` shim
+for pre-stateless *clients*, which is a different mechanism that does exist.
+
+### What the measurements found
+
+- **~12 µs of framework overhead per turn** warm, on an empty catalog. The first turn in a process
+  costs ~280 µs, roughly 95% of it lazy initialisation and first-touch page faults; both are now
+  reported separately rather than one standing for the other ([I-013](notes/INCIDENTS.md)).
+- **~16 µs per tool per turn** — about **3.3 ms on a 200-tool catalog**, close to linear. Twenty-five
+  turns of accumulated history moved it not at all. The catalog is re-segmented, re-hashed and
+  re-cloned every turn; history grows slowly and the budgeter is already evicting it. **If you are
+  worried about a long conversation, worry about the catalog instead.**
+- Roughly half of that is cloning tool definitions into the request, which cannot change within a
+  run. Recorded, not fixed.
+- **Median overhead does not degrade from 1 to 1,024 concurrent agents** on one shared adapter. The
+  p99 runs 40–60× the median and is noisy between repeats; that is written down rather than omitted,
+  and it is not explained.
+- **Against a live provider: 16–51 parts per million of a real turn**, and **32 concurrent agents
+  with zero failures** on one shared adapter. 106 paid requests across two flash-tier models,
+  **$0.00015**. Dated record in `notes/perf/live-concurrency.jsonl`.
+
+### The claims table
+
+**61 rows: 29 settled by a named test, 2 operated, 6 tested-only, 14 unevidenced, 10 retracted.**
+Ten retractions against twenty-nine settled claims is the ratio worth looking at, and it is the
+first release where the retracted column moved more than the settled one.
+
 ## [0.2.0] — 2026-08-14
 
 **The release where a real caller arrived.** `0.1.0` and `0.1.1` were written against scripted

@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "frey"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-a2a",
  "frey-agent",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "frey-a2a"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-core",
  "serde",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "frey-agent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-context",
  "frey-core",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "frey-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey",
  "serde_json",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "frey-context"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "frey-core",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "frey-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dynosaur",
  "futures-core",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "frey-harness"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-agent",
  "frey-context",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "frey-macros"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "frey-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-core",
  "pollster",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "frey-providers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "frey-context",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "frey-sandbox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-core",
  "pollster",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "frey-testkit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-core",
  "futures-core",
@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "frey-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "frey-core",
  "frey-macros",
@@ -1871,7 +1871,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",

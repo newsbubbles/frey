@@ -13,7 +13,7 @@ name = "frey"
 path = "src/main.rs"
 
 [dependencies]
-frey = { path = "../frey", version = "0.2.0" }
+frey = { path = "../frey", version = "0.2.1" }
 serde_json.workspace = true
 
 [lints]

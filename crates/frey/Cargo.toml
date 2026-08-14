@@ -12,15 +12,15 @@ categories = ["development-tools", "api-bindings"]
 readme = "../../README.md"
 
 [dependencies]
-frey-core = { path = "../frey-core", version = "0.2.0" }
-frey-agent = { path = "../frey-agent", version = "0.2.0" }
-frey-context = { path = "../frey-context", version = "0.2.0" }
-frey-tools = { path = "../frey-tools", version = "0.2.0" }
-frey-providers = { path = "../frey-providers", version = "0.2.0", default-features = false }
-frey-sandbox = { path = "../frey-sandbox", version = "0.2.0", optional = true }
-frey-mcp = { path = "../frey-mcp", version = "0.2.0", optional = true }
-frey-a2a = { path = "../frey-a2a", version = "0.2.0", optional = true }
-frey-harness = { path = "../frey-harness", version = "0.2.0", optional = true }
+frey-core = { path = "../frey-core", version = "0.2.1" }
+frey-agent = { path = "../frey-agent", version = "0.2.1" }
+frey-context = { path = "../frey-context", version = "0.2.1" }
+frey-tools = { path = "../frey-tools", version = "0.2.1" }
+frey-providers = { path = "../frey-providers", version = "0.2.1", default-features = false }
+frey-sandbox = { path = "../frey-sandbox", version = "0.2.1", optional = true }
+frey-mcp = { path = "../frey-mcp", version = "0.2.1", optional = true }
+frey-a2a = { path = "../frey-a2a", version = "0.2.1", optional = true }
+frey-harness = { path = "../frey-harness", version = "0.2.1", optional = true }
 
 [features]
 default = ["http", "mcp", "sandbox", "harness"]
@@ -40,7 +40,7 @@ harness = ["dep:frey-harness"]
 full = ["http", "mcp", "sandbox", "a2a", "harness", "agent-cli"]
 
 [dev-dependencies]
-frey-testkit = { path = "../frey-testkit", version = "0.2.0" }
+frey-testkit = { path = "../frey-testkit", version = "0.2.1" }
 pollster = "0.4"
 serde_json.workspace = true
 # The live provider examples need a real reactor. `HttpProvider` is built on `reqwest`, which is
