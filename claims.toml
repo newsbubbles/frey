@@ -610,3 +610,52 @@ It cannot: the hash was not written down. Such a journal replays for *shape* and
 `Divergence::Unknown`, which is logged rather than treated as a match — the honest answer being that
 the prompts were not compared, not that they agreed.
 """
+
+[[claim]]
+id = "perf.per-turn-overhead-is-measured"
+claim = "Frey reports what the framework itself cost on every turn, separated from the provider wait and the caller's tools."
+stated_in = ["docs/performance.md", "docs/why-frey.md"]
+status = "settled"
+settled_by = "test:every_turn_reports_where_its_time_went"
+would_settle = """
+`EventKind::TurnFinished` carries a `TurnTiming` on **every** turn, tool turns included, into the
+journal and the trace. `frey timings <journal>` reads it back.
+
+The design decision worth defending: `overhead_us` is `total - provider - tools`, computed by
+subtraction rather than by summing the instrumented phases, so loop time nobody put a clock on
+shows up as a gap instead of disappearing. Pinned by
+`time_nobody_instrumented_shows_up_rather_than_disappearing`.
+"""
+
+[[claim]]
+id = "perf.overhead-is-small-on-a-minimal-prompt"
+claim = "Frey's per-turn overhead is roughly 0.3 ms."
+stated_in = ["docs/performance.md"]
+status = "tested-only"
+settled_by = "test:every_turn_reports_where_its_time_went"
+would_settle = """
+282 µs on a release build, one turn, one user message, no tools — `cargo run --release -p frey
+--example turn_timing`. Segmentation is 115 µs of it and request assembly 86 µs.
+
+**Deliberately not `settled`, because the prompt is the smallest one possible.** The two dominant
+phases both scale with prompt size: `build_segments` walks every tool definition and every turn,
+and assembly clones the request. A 200-tool catalog over a 50-turn history is the case that
+matters for the workload this framework is aimed at, and it has not been measured. Quoting 0.3 ms
+as though it were the number for a real agent would be quoting the easiest possible case.
+
+Settling it: the same measurement across a realistic prompt, and a second one showing how it grows.
+"""
+
+[[claim]]
+id = "perf.concurrency"
+claim = "Frey handles many concurrent agents on a shared provider adapter without degrading."
+status = "declared-only"
+would_settle = """
+The design is there and untested. `complete` takes `&self`, `Arc<P>` implements `ModelProvider`
+(fixed in 0.2.0 — the documented pattern did not compile), and `HttpProvider::with_client` exists
+so a fleet shares one connection pool rather than exhausting sockets.
+
+None of that is measured. No load test, no contention measurement, no figure for what happens at
+100 or 10,000 concurrent runs. The external reviewer whose workload is ~35,000 sessions a day is
+the reason the affordances exist, and their absence from this table is the honest state.
+"""

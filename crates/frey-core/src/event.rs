@@ -220,6 +220,13 @@ pub enum EventKind {
         /// What that call consumed.
         usage: Usage,
     },
+    /// A turn ended, with where its wall-clock went.
+    TurnFinished {
+        /// Which turn.
+        turn: TurnId,
+        /// The breakdown.
+        timing: TurnTiming,
+    },
     /// A diagnostic worth surfacing.
     Warned {
         /// The diagnostic.
@@ -232,6 +239,76 @@ pub enum EventKind {
         /// What it cost, when that can be said.
         cost: Option<CostEstimate>,
     },
+}
+
+/// Where one turn's wall-clock went, in microseconds.
+///
+/// **The point of this type is the line it draws.** Three of these phases are Frey's own work and
+/// three are somebody else's, and a framework reporting one undivided number is reporting mostly
+/// the network. The same mistake was made about MCP startup and measured away: 99.5% of what
+/// looked like protocol cost was a process starting.
+///
+/// So [`Self::overhead_us`] is the number that means *"what did the framework cost"* — everything
+/// except waiting for the provider and running the caller's tools. It is the only figure here worth
+/// putting in a comparison against another framework, and it is deliberately the smallest one.
+///
+/// Microseconds because the framework phases are expected to be tens to hundreds of them and
+/// milliseconds would round the interesting part to zero. `u64` of microseconds overflows after
+/// about 584,000 years.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TurnTiming {
+    /// Building segments from the tool definitions and the turn history.
+    pub segment_us: u64,
+    /// [`crate::segment::Segment`] budgeting — deciding what to evict.
+    pub budget_us: u64,
+    /// Cache planning: breakpoint placement, churn and minimum-prefix checks.
+    pub plan_us: u64,
+    /// Applying the eviction and building the request, including cloning it.
+    pub assemble_us: u64,
+    /// **Not Frey.** Waiting for the provider: network, queue, and inference.
+    pub provider_us: u64,
+    /// Decoding the response, reconciling the estimate, accounting, and emitting events.
+    pub account_us: u64,
+    /// **Not Frey.** Running the caller's tools.
+    pub tools_us: u64,
+    /// The whole turn, wall-clock.
+    pub total_us: u64,
+}
+
+impl TurnTiming {
+    /// What the framework itself cost: everything but the provider wait and the caller's tools.
+    ///
+    /// Computed by subtraction rather than by summing the phases, so anything happening in the loop
+    /// that nobody thought to instrument lands **inside** the overhead figure instead of vanishing.
+    /// A breakdown that always adds up is a breakdown that cannot show you a surprise.
+    #[must_use]
+    pub fn overhead_us(&self) -> u64 {
+        self.total_us.saturating_sub(self.provider_us).saturating_sub(self.tools_us)
+    }
+
+    /// The share of the turn Frey is responsible for, in per-mille.
+    ///
+    /// Per-mille rather than a percentage because on a real turn this is usually under 1%, and
+    /// integers rather than a float because this goes in a journal that gets diffed.
+    #[must_use]
+    pub fn overhead_permille(&self) -> u64 {
+        if self.total_us == 0 {
+            return 0;
+        }
+        self.overhead_us().saturating_mul(1000) / self.total_us
+    }
+
+    /// The phases Frey instruments, summed — which is **not** [`Self::overhead_us`].
+    ///
+    /// The gap between the two is uninstrumented loop time. Watching it grow is the point.
+    #[must_use]
+    pub fn accounted_us(&self) -> u64 {
+        self.segment_us
+            .saturating_add(self.budget_us)
+            .saturating_add(self.plan_us)
+            .saturating_add(self.assemble_us)
+            .saturating_add(self.account_us)
+    }
 }
 
 /// An event, with everything needed to place it in a tree and a timeline.
@@ -305,8 +382,71 @@ mod tests {
             EventKind::StateDelta { patch: serde_json::json!([]) },
             EventKind::UsageUpdated { usage: Usage::default() },
             EventKind::Warned { warning: Warning::BelowMinPrefix { have: 380, need: 512 } },
+            EventKind::TurnFinished {
+                turn: TurnId(0),
+                timing: TurnTiming { total_us: 1_000, provider_us: 900, ..TurnTiming::default() },
+            },
             EventKind::RunFinished { totals: UsageTotals::default(), cost: None },
         ]
+    }
+
+    /// The whole reason this type is not one number.
+    #[test]
+    fn overhead_excludes_the_provider_and_the_callers_tools() {
+        let t = TurnTiming {
+            segment_us: 40,
+            budget_us: 60,
+            plan_us: 80,
+            assemble_us: 120,
+            provider_us: 2_000_000,
+            account_us: 100,
+            tools_us: 500_000,
+            total_us: 2_500_400,
+        };
+        assert_eq!(t.overhead_us(), 400, "the framework's share, not the turn's wall-clock");
+        // 400/2_500_400 rounds to 0 per-mille, which is the honest answer and the reason this is
+        // reported alongside the microseconds rather than instead of them.
+        assert_eq!(t.overhead_permille(), 0);
+        assert_eq!(t.accounted_us(), 400, "every microsecond is attributed to a named phase");
+    }
+
+    /// Overhead is `total - provider - tools`, never the sum of the phases.
+    ///
+    /// If it were the sum, time spent in the loop that nobody instrumented would vanish from the
+    /// report — the measurement would be defined as complete rather than measured to be, which is
+    /// the shape of every defect in `notes/INCIDENTS.md`.
+    #[test]
+    fn time_nobody_instrumented_shows_up_rather_than_disappearing() {
+        let t = TurnTiming {
+            segment_us: 10,
+            budget_us: 10,
+            plan_us: 10,
+            assemble_us: 10,
+            account_us: 10,
+            provider_us: 1_000,
+            tools_us: 0,
+            total_us: 1_950, // 900 µs somewhere nobody put a clock
+        };
+        assert_eq!(t.accounted_us(), 50);
+        assert_eq!(t.overhead_us(), 950);
+        assert_eq!(
+            t.overhead_us() - t.accounted_us(),
+            900,
+            "uninstrumented loop time has to be visible, not defined away"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_took_no_time_does_not_divide_by_zero() {
+        assert_eq!(TurnTiming::default().overhead_permille(), 0);
+    }
+
+    #[test]
+    fn a_timing_survives_the_journal() {
+        let t = TurnTiming { segment_us: 1, provider_us: 2, total_us: 9, ..TurnTiming::default() };
+        let round: TurnTiming =
+            serde_json::from_str(&serde_json::to_string(&t).expect("encode")).expect("decode");
+        assert_eq!(round, t);
     }
 
     #[test]

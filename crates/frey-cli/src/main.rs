@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         Some("doctor") => commands::doctor(json),
         Some("profiles") => commands::profiles(json),
         Some("tools") => commands::tools(json),
+        Some("timings") => commands::timings(positional.get(1).copied(), json),
         Some(unknown) => {
             eprintln!("unknown command `{unknown}`\n");
             eprint!("{}", commands::help());

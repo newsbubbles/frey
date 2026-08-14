@@ -12,7 +12,7 @@ use frey_context::budget::{Budgeter, ContextBudget};
 use frey_context::cache::{CachePlanner, PreviousPrompt, check_lookback};
 use frey_context::hash::hash_parts;
 use frey_core::error::{ToolError, ToolErrorKind, ToolOutcome};
-use frey_core::event::{Event, EventKind, Warning};
+use frey_core::event::{Event, EventKind, TurnTiming, Warning};
 use frey_core::ids::{RunId, SegmentId, SeqId, SessionId};
 use frey_core::item::{Item, Role, ToolResultItem, Turn};
 use frey_core::provider::{ModelProvider, ProviderError, Request, StopReason};
@@ -414,8 +414,16 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 EventKind::TurnStarted { turn: frey_core::ids::TurnId(turn_index) },
             ));
 
+            // Where this turn's wall-clock goes. Cheap — `Instant::now` is a vDSO read on every
+            // platform Frey targets — and the only way to answer "what does the framework cost"
+            // with a number rather than an opinion.
+            let turn_started = std::time::Instant::now();
+            let mut timing = TurnTiming::default();
+            let mut phase = std::time::Instant::now();
+
             // 1. Segment the prompt, so budgeting and cache planning have something to reason over.
             let segments = build_segments(&definitions, &turns);
+            timing.segment_us = elapsed_us(&mut phase);
 
             // 2. Fit it. Eviction is never silent.
             let fitted = match Budgeter::fit(&segments, &budget) {
@@ -425,6 +433,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     return Err(RunError::Budget { source, journal: Box::new(journal) });
                 }
             };
+            timing.budget_us = elapsed_us(&mut phase);
             for warning in &fitted.warnings {
                 warn(&mut journal, &mut warnings, turn_index, warning.clone());
             }
@@ -435,6 +444,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 warn(&mut journal, &mut warnings, turn_index, warning.clone());
             }
             previous = PreviousPrompt::from_segments(&fitted.keep);
+            timing.plan_us = elapsed_us(&mut phase);
 
             // 4. Ask the model — with the prompt the budgeter actually decided on.
             //
@@ -464,7 +474,15 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 ..Request::default()
             };
 
-            let response = match self.provider.complete(request.clone()).await {
+            // **The clone is hoisted out of the call.** It used to sit inside
+            // `complete(request.clone())`, where the argument is evaluated before the future starts
+            // — so cloning the entire prompt, every turn, was billed to "waiting for the provider".
+            // A measurement that quietly files Frey's own work under somebody else's is the exact
+            // mistake this type exists to stop.
+            let for_journal = request.clone();
+            timing.assemble_us = elapsed_us(&mut phase);
+
+            let response = match self.provider.complete(request).await {
                 Ok(response) => response,
                 Err(source) => {
                     // The failure that arrives at three in the morning. Everything the run did
@@ -473,7 +491,8 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     return Err(RunError::Provider { source, journal: Box::new(journal) });
                 }
             };
-            journal.record(effect_of(&request, &response));
+            timing.provider_us = elapsed_us(&mut phase);
+            journal.record(effect_of(&for_journal, &response));
 
             // What Frey guessed the prompt weighed, against what the provider charged for. Free —
             // both numbers are already here — and the precondition for every token threshold in the
@@ -573,8 +592,11 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             }
 
             turns.push(Turn::new(Role::Assistant, response.items.clone()));
+            timing.account_us = elapsed_us(&mut phase);
 
             if calls.is_empty() || response.stop == StopReason::EndTurn {
+                timing.total_us = micros(turn_started.elapsed());
+                finish_turn(&mut journal, turn_index, timing);
                 finish(&mut journal, &mut warnings, turn_index, &totals);
                 // The same warning on every turn is noise that trains people to ignore warnings.
                 // Each distinct one is reported once, in the order it first appeared.
@@ -716,12 +738,59 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                     provenance: cx.provenance.clone(),
                 }));
             }
+            timing.tools_us = elapsed_us(&mut phase);
             turns.push(Turn::new(Role::User, results));
+
+            timing.total_us = micros(turn_started.elapsed());
+            finish_turn(&mut journal, turn_index, timing);
         }
 
         finish(&mut journal, &mut warnings, self.max_turns, &totals);
         Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
+}
+
+/// Microseconds, saturating. A turn lasting longer than 584,000 years is not the failure to guard.
+fn micros(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Time since the last phase boundary, and move the boundary.
+fn elapsed_us(phase: &mut std::time::Instant) -> u64 {
+    let now = std::time::Instant::now();
+    let took = micros(now.duration_since(*phase));
+    *phase = now;
+    took
+}
+
+/// Close a turn with where its time went.
+///
+/// Emitted on **both** exits — the one that returns an answer and the one that goes round again for
+/// tools. A breakdown that only appears on the last turn of a run describes the least
+/// representative turn in it.
+///
+/// Also goes to the trace, because the journal answers "where did that run's time go" after the
+/// fact and a span answers it while the thing is running.
+fn finish_turn(journal: &mut Journal, turn: u32, timing: TurnTiming) {
+    tracing::info!(
+        turn,
+        total_us = timing.total_us,
+        overhead_us = timing.overhead_us(),
+        overhead_permille = timing.overhead_permille(),
+        segment_us = timing.segment_us,
+        budget_us = timing.budget_us,
+        plan_us = timing.plan_us,
+        assemble_us = timing.assemble_us,
+        provider_us = timing.provider_us,
+        account_us = timing.account_us,
+        tools_us = timing.tools_us,
+        unaccounted_us = timing.overhead_us().saturating_sub(timing.accounted_us()),
+        "frey.turn.timing"
+    );
+    journal.record_event(Event::root(
+        SeqId(turn),
+        EventKind::TurnFinished { turn: frey_core::ids::TurnId(turn), timing },
+    ));
 }
 
 /// Record a warning in both places it belongs: the journal, which is the whole record, and the
@@ -1330,6 +1399,75 @@ mod tests {
         assert!(
             !content.contains("search"),
             "guidance may only point at what the loop actually offers: {content}"
+        );
+    }
+
+    /// Every turn reports where its time went — including the turns in the middle.
+    ///
+    /// A breakdown emitted only on the turn that returns an answer describes the least
+    /// representative turn in the run: the one with no tool calls in it.
+    #[test]
+    fn every_turn_reports_where_its_time_went() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("fs_read")]),
+            Scripted::text("done"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let out = pollster::block_on(agent.run("go")).expect("run");
+
+        let timings: Vec<TurnTiming> = out
+            .journal
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::TurnFinished { timing, .. } => Some(*timing),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(timings.len(), 2, "one per turn, tool turn included");
+
+        for t in &timings {
+            assert!(t.total_us > 0, "a turn that took no measurable time is a stopped clock");
+            assert!(
+                t.overhead_us() <= t.total_us,
+                "the framework cannot cost more than the turn: {t:?}"
+            );
+            assert!(
+                t.accounted_us() <= t.overhead_us(),
+                "named phases cannot exceed the overhead they are a breakdown of: {t:?}"
+            );
+        }
+        assert!(
+            timings[0].tools_us > 0,
+            "the turn that ran a tool must attribute time to the caller's code, not to Frey"
+        );
+        assert_eq!(timings[1].tools_us, 0, "and the turn that ran none must not invent any");
+    }
+
+    /// The clone that used to be billed to the provider.
+    ///
+    /// `complete(request.clone())` evaluates the clone before the future starts, so cloning the
+    /// whole prompt — every turn — landed inside `provider_us`. With a scripted model the provider
+    /// wait is near zero, which makes the misattribution measurable rather than theoretical.
+    #[test]
+    fn freys_own_work_is_not_filed_under_waiting_for_the_provider() {
+        let agent = Agent::new(ScriptedModel::replying("done"), tools(&[]), "test-model");
+        let out = pollster::block_on(agent.run("go")).expect("run");
+        let EventKind::TurnFinished { timing, .. } = out
+            .journal
+            .events
+            .iter()
+            .find_map(|e| match &e.kind {
+                k @ EventKind::TurnFinished { .. } => Some(k.clone()),
+                _ => None,
+            })
+            .expect("a turn reported its timing")
+        else {
+            unreachable!()
+        };
+        assert!(
+            timing.assemble_us > 0 || timing.total_us < 50,
+            "building and cloning the request is Frey's work and must be attributed: {timing:?}"
         );
     }
 

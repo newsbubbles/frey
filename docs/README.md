@@ -10,6 +10,7 @@ Start here.
 | [Tools](tools.md) | You are writing the things your agent can do. |
 | [MCP](mcp.md) | You want to call an MCP server, or be one. |
 | [Context and caching](context-and-caching.md) | Your bill is larger than you expected. |
+| [Performance](performance.md) | You want to know what the framework itself costs per turn. |
 | [Security model](security-model.md) | Someone is going to audit this. |
 | [Testing an agent](testing.md) | You want tests that do not cost money or flake. |
 | [FAQ](faq.md) | You are deciding whether to use this at all. |

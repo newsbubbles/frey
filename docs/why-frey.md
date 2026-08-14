@@ -89,7 +89,7 @@ Frey ships [`claims.toml`](../claims.toml) — every claim in its README and doc
 and a link to whatever stands behind it, **checked in CI on every push**. A test that gets renamed
 unsettles the claim that cited it. Evidence with a date on it expires.
 
-Today: **53 rows — 28 settled by a named test, 1 operated, 3 tested-only, 14 unevidenced, 7
+Today: **59 rows — 29 settled by a named test, 1 operated, 4 tested-only, 15 unevidenced, 10
 retracted.** The retracted ones are claims this repository made and withdrew; they are kept in the
 file because deleting them would hide that they were ever made.
 
@@ -142,6 +142,12 @@ no incidents is indistinguishable from a project with no instruments.
 - Raising integrity happens in one auditable, greppable place
 - Combining trusted and untrusted values does not read as trusted
 
+**Knowing what it costs you**
+- Every turn reports where its wall-clock went, split into Frey's phases and the two that are not
+  Frey's — the provider wait and your tools. `frey timings <journal>` reads it back across a run.
+  **~282 µs of framework overhead per turn** on a release build, *on the smallest possible prompt* —
+  see [performance](performance.md) for why that caveat is the important half.
+
 **Operating**
 - Replay reproduces a run and diverges loudly at the first mismatch
 - Replay is reachable from the ordinary loop as a `ModelProvider`
@@ -156,6 +162,10 @@ Lookback checking · OpenRouter breakpoints for `anthropic/*` · agent-CLI deleg
 - **Progressive disclosure.** Tools, skills and code-mode as three views of one catalog is built and
   **not wired into the loop**, which takes a fixed tool list once per run.
 - The planner beating a competent hand-placed breakpoint — see the honest ceiling below
+- **Concurrency at any scale.** `complete(&self)`, `Arc<P>: ModelProvider` and
+  `HttpProvider::with_client` exist so a fleet shares one connection pool. No load test does.
+- **Overhead on a realistic prompt.** The 282 µs above is one message and no tools; segmentation and
+  assembly both scale with prompt size and neither has been measured at scale.
 - Human approval inside `Agent::run` · media items · unattended operation
 
 ### Retracted — do not use Frey for these
@@ -191,6 +201,6 @@ who already knows about them*. The pre-registered A/B that would settle it is in
 [`notes/plan/STATUS.md`](../notes/plan/STATUS.md), with a control arm of one hand-placed breakpoint
 rather than zero, because three independent readers called the zero arm a strawman.
 
-And `operating.unattended` is unevidenced too. 498 tests pass. **Nobody has run Frey unattended,
+And `operating.unattended` is unevidenced too. 506 tests pass. **Nobody has run Frey unattended,
 including its author.** A passing test is not an operating hour, and the whole apparatus above
 exists so those two things cannot be quietly confused.
