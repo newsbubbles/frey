@@ -102,14 +102,16 @@ Ranked by consequence.
 
 ### A1 — There is no shell tool. There are no tools at all.
 
-R5: *"There should also be some existing toolsets including an actually secure shell tool."*
-
 `frey-tools::builtin` contains five **validators** and two helpers. No tool. Nothing in the workspace
 spawns a process for a tool — the only `Command::new` is the agent-CLI delegation adapter.
 
-This is defensible as a design (a framework that ships no tools ships no CVEs) but it is not what the
-seed requirement asked for, and the README's crate table reads as though `frey-tools` contains tools.
-It contains the layers a tool passes through and the validators you'd build one with.
+R5 asked for *"some existing toolsets including an actually secure shell tool"*, and shipping none is
+defensible on its own terms: a framework that ships no tools ships no CVEs. The README's crate table
+read as though `frey-tools` contains tools, which is now corrected — it contains the layers a call
+passes through and the validators you would build one with.
+
+The cost is not the missing tool. It is that Frey has never been its own consumer at this layer, and
+every gap in §4 below is downstream of that. See "what to do" item 5.
 
 ### A2 — Nothing is ever confined.
 
@@ -186,9 +188,26 @@ are exercised by thousands of live sessions. The unwired parts are the ones they
 3. **A4: `ToolHost::definitions`** — async and fallible, with the reduced-catalog decision made.
 4. **Wire one disclosure path end to end** — `search` into the loop, producing `Item::Discovery` and
    `EventKind::Discovered`. Until one exists, the catalog thesis is a design and not a feature.
-5. **Ship one real tool.** A single `fs_read` built from `InWorkspace` + the macro would prove the
-   whole stack composes, and would be the first evidence that `#[frey::tool]` output can reach a
-   loop without the user writing glue.
+5. **Ship one tool — as a forcing function, not as a feature.**
+
+   The R5 framing ("the seed asked for a shell tool") is the weaker argument and was the one
+   originally written here. The stronger one is evidence:
+
+   | | Count |
+   |---|---|
+   | Hand-written `ToolHost` adapters across three projects | 4 (thicket, abacus, deadnet ×2) |
+   | Uses of `#[frey::tool]` anywhere, including in Frey | **0** |
+   | `impl ToolHost` inside Frey | 1, in a test |
+
+   Four independent authors reached for the macro, found that its output implements none of `Tool`,
+   `Toolset` or `ToolHost`, and wrote the adapter by hand instead. It saves the schema boilerplate
+   and then abandons you at the point where help is actually needed. deadnet went further and wrote
+   its own skill module rather than use `frey-context::skills`, for the same reason.
+
+   None of that is a coincidence, and none of it would have survived Frey having to build a tool
+   with its own macro and hand it to its own loop. **A framework that has never been its own
+   consumer at a layer has no forcing function to make that layer's glue exist.** The tool is the
+   forcing function; the tool itself is nearly incidental.
 
 ## A note on method, for next time
 
