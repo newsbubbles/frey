@@ -315,6 +315,72 @@ catch this class and does not exist.
 
 ---
 
+### I-012 · Every run in a process shared one run id
+
+**found_by: system (test)** · frey · severity: high
+
+Writing the concurrency test — sixty-four agents on one shared adapter — produced sixty-four
+journals with **one run id between them**.
+
+```rust
+let run_id = RunId::new(format!("{}-run", self.session));   // and `Agent::new` defaults
+                                                            // the session to "default"
+```
+
+The run id was a pure function of the session, and the session defaults to a literal. So any caller
+who did not know to set one — which is every caller following the README's quick-start — got
+`default-run` for every run in the process, concurrent or not.
+
+**Nothing fails at the time.** Each run completes, each journal is correct in isolation, and the
+cost is paid later: the run id is the primary key for everything attributional. Which journal
+belongs to which run. Which `RunStarted` a frontend watching several agents is following. Which
+record an incident refers to. Collapsing it to a constant makes the records unmergeable *afterwards*,
+which is the same shape as everything else in this file.
+
+It also explains a workaround: deadnet's `write_journal` gained collision-suffixed filenames a few
+hours earlier, which was treating a symptom of this without anybody noticing the cause.
+
+**Fixed**: session, process id, and a monotonic counter. Unique across concurrent runs in a process
+and across concurrent processes on a host; **not** globally unique, since a recycled pid on a later
+boot can repeat one, and that bound is written on the function. `RequestFingerprint` does not
+include the run id, so replay is unaffected.
+
+**Worth its `found_by`.** This is the second `system` entry, and unlike I-003 it was not caught by an
+instrument built to catch it — it was caught by a test written to measure something else entirely.
+The concurrency test was there to check that per-turn overhead does not degrade under load; the
+assertion that found this was one line of housekeeping about journals being distinct. The lesson is
+narrow and useful: **a measurement harness is a place bugs get found even when the measurement comes
+back clean.** The performance answer was fine. The correctness answer was not.
+
+`frey_harness::Session` has the same `format!("{id}-run")` shape and is **not** changed: its journal
+is session-scoped by design rather than run-scoped, so the id matching the session is correct there.
+Recorded here so the next reader does not have to re-derive that.
+
+---
+
+### I-013 · The per-turn overhead figure was a cold-start number, and it was published
+
+**found_by: code-reading** · frey · severity: medium
+
+`docs/performance.md` and `claims.toml` reported **282 µs** of framework overhead per turn, measured
+by `cargo run --release -p frey --example turn_timing`. That example runs exactly one turn in a
+fresh process.
+
+The concurrency sweep put one agent at ~288 µs and a thousand agents at ~12 µs each, which reads as
+*"Frey gets twentyfold cheaper under load"* — an absurd result, and the tell. Adding a warm-up loop
+before measuring moved the single-agent figure to ~32 µs. **Roughly 95% of the published number was
+first-run cost**: lazy initialisation, allocator growth, first-touch page faults.
+
+Both numbers are real and they answer different questions — what your first turn costs, and what
+every turn after it costs. Reporting the first as "Frey's per-turn overhead" overstated it by more
+than twentyfold. It stood for about an hour and was never pushed.
+
+**What made it wrong was not the measurement but the sample size.** One turn, one process, no
+repeats — and the honest median of a single sample is that single sample. The corrected figures come
+from 1,024 of them.
+
+---
+
 ## Open
 
 - **No `frey_rev` in any historical record.** Everything before today is attributable to "frey",

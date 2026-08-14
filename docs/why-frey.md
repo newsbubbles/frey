@@ -89,7 +89,7 @@ Frey ships [`claims.toml`](../claims.toml) — every claim in its README and doc
 and a link to whatever stands behind it, **checked in CI on every push**. A test that gets renamed
 unsettles the claim that cited it. Evidence with a date on it expires.
 
-Today: **59 rows — 29 settled by a named test, 1 operated, 4 tested-only, 15 unevidenced, 10
+Today: **60 rows — 29 settled by a named test, 1 operated, 5 tested-only, 15 unevidenced, 10
 retracted.** The retracted ones are claims this repository made and withdrew; they are kept in the
 file because deleting them would hide that they were ever made.
 
@@ -145,8 +145,11 @@ no incidents is indistinguishable from a project with no instruments.
 **Knowing what it costs you**
 - Every turn reports where its wall-clock went, split into Frey's phases and the two that are not
   Frey's — the provider wait and your tools. `frey timings <journal>` reads it back across a run.
-  **~282 µs of framework overhead per turn** on a release build, *on the smallest possible prompt* —
-  see [performance](performance.md) for why that caveat is the important half.
+  **~12 µs of framework overhead per turn** warm, ~280 µs on the first turn of a process, *on the
+  smallest possible prompt* — see [performance](performance.md), where the caveats are the
+  important half.
+- **The median does not degrade from 1 to 1,024 concurrent agents** on one shared adapter. The p99
+  does, by 40–60×, and that is written down rather than omitted.
 
 **Operating**
 - Replay reproduces a run and diverges loudly at the first mismatch
@@ -162,10 +165,11 @@ Lookback checking · OpenRouter breakpoints for `anthropic/*` · agent-CLI deleg
 - **Progressive disclosure.** Tools, skills and code-mode as three views of one catalog is built and
   **not wired into the loop**, which takes a fixed tool list once per run.
 - The planner beating a competent hand-placed breakpoint — see the honest ceiling below
-- **Concurrency at any scale.** `complete(&self)`, `Arc<P>: ModelProvider` and
-  `HttpProvider::with_client` exist so a fleet shares one connection pool. No load test does.
-- **Overhead on a realistic prompt.** The 282 µs above is one message and no tools; segmentation and
-  assembly both scale with prompt size and neither has been measured at scale.
+- **Concurrency against a real provider.** The sweep above uses a sleeping fake, so it says nothing
+  about sockets, TLS, HTTP/2 stream limits or rate limits.
+- **Overhead on a realistic prompt.** The figures above are one message and no tools; segmentation
+  and assembly both scale with prompt size and neither has been measured at scale.
+- **Why the p99 tail exists.** Measured, not explained.
 - Human approval inside `Agent::run` · media items · unattended operation
 
 ### Retracted — do not use Frey for these

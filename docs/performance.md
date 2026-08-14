@@ -13,12 +13,29 @@ separates what Frey does from what Frey waits for.
 
 ## Per-turn overhead
 
-Every turn emits [`EventKind::TurnFinished`] carrying a `TurnTiming`, into the journal **and** the
-tracing span. Seven phases, three of them Frey's, and a total:
+Every turn emits `EventKind::TurnFinished` carrying a `TurnTiming`, into the journal **and** the
+tracing span. Seven phases, five of them Frey's, two not, and a total.
+
+**~12 µs of framework overhead per turn**, steady state, release build — the median of 1,024
+concurrent runs. Against a real turn of one to three seconds of provider wait, that is around
+**0.001%**.
+
+### The first turn costs twenty times that, and it is worth saying separately
 
 ```
-cargo run --release -p frey --example turn_timing
+cargo run --release -p frey --example turn_timing     # one turn, cold process
 ```
+
+reads about **280 µs**, of which roughly 95% is first-run cost: lazy initialisation, allocator
+growth, first-touch page faults. That figure was published here for about an hour as "Frey's
+per-turn overhead" before the concurrency sweep made it obviously wrong — one agent at 288 µs and a
+thousand at 12 µs each reads as *"Frey gets cheaper under load"*, which is the tell. Recorded as
+[I-013](../notes/INCIDENTS.md).
+
+Both numbers are real. **~280 µs is what your first turn costs; ~12 µs is what every turn after it
+costs.**
+
+### The breakdown, cold, so the phases are visible at all
 
 ```
   segment           115 µs   frey        building segments from tools + history
@@ -29,23 +46,17 @@ cargo run --release -p frey --example turn_timing
   provider           15 µs   NOT frey    waiting for the model
   tools               0 µs   NOT frey    running the caller's code
   unaccounted         2 µs               nobody put a clock here
-  ----------------------------------------
-  OVERHEAD          282 µs   frey's share
-  turn total        297 µs
 ```
 
-**~282 µs**, release build, against a real turn that takes one to three seconds of provider wait.
-That is roughly **0.03% of a typical turn** — and roughly 0.0008% of the eight seconds it takes to
-start one MCP server.
+Warm, every one of those collapses to one or two microseconds. Segmentation and assembly are the
+two that matter because they are the two that scale with prompt size.
 
-### Read that number narrowly
+### Read all of it narrowly
 
-**It is the smallest possible prompt**: one user message, no tools, one turn. The two dominant
-phases both scale with prompt size — `build_segments` walks every tool definition and every turn in
-the history, and assembly clones the whole request. A 200-tool catalog over a 50-turn history is the
-case that actually matters for the workload Frey is aimed at, and **it has not been measured.**
-`claims.toml` records this as `tested-only` for exactly that reason. Quoting 0.3 ms as *the* number
-for a real agent would be quoting the easiest case available.
+**It is the smallest possible prompt**: one user message, no tools. `build_segments` walks every
+tool definition and every turn in the history, and assembly clones the whole request, so both grow
+with the prompt. A 200-tool catalog over a 50-turn history is the case that actually matters for the
+workload Frey is aimed at, and **it has not been measured.**
 
 ### Why overhead is computed by subtraction
 
@@ -58,6 +69,42 @@ breakdown that cannot show you a surprise, and every entry in
 One bug found by building this: `provider.complete(request.clone())` evaluates the clone *before*
 the future starts, so cloning the entire prompt — every turn — was billed to "waiting for the
 provider". The clone is hoisted out now and counted as assembly, where it belongs.
+
+## Concurrency
+
+```
+cargo run --release -p frey --example concurrency
+```
+
+N agents, **one shared provider adapter** behind an `Arc`, each provider call sleeping 50 ms to
+stand in for network and inference so the runs genuinely overlap. Eight worker threads.
+
+| agents | median overhead µs | p99 µs | segment | assemble | wall ms |
+|---|---|---|---|---|---|
+| 1 | 101 | 101 | 3 | 12 | 63 |
+| 8 | 45 | 180 | 3 | 3 | 60 |
+| 64 | 18 | 609 | 1 | 2 | 64 |
+| 256 | 13 | 601 | 1 | 1 | 67 |
+| 1024 | **11** | 591 | 1 | 1 | 72 |
+
+**The median does not degrade from 1 to 1,024 concurrent agents.** It falls, because the low-N rows
+have too few samples to be medians at all — the N=1 row *is* one measurement, and it moves by 3×
+between repeats. The bottom row has 1,024 and is the one to trust.
+
+**The p99 is the honest bad news.** It sits at 40–60× the median and is noisy across repeats
+(400–2,900 µs at the same N on different runs). Some turn, somewhere, waits. The medians not moving
+says it is scheduler jitter rather than contention, but that is an inference and not a measurement:
+characterising it properly needs repeats and a histogram, which do not exist.
+
+### What this cannot tell you
+
+No sockets, no TLS, no HTTP/2 stream limits, no rate limits, no DNS. A flat median here means *Frey*
+does not degrade with concurrency — not that your provider will not. Those are different claims and
+only the first is being made.
+
+The test that pins the *correctness* half — 64 agents, one adapter, distinct journals — is
+`crates/frey/tests/concurrency.rs`, and it found [I-012](../notes/INCIDENTS.md) on its first run:
+every run in a process shared one run id.
 
 ## Reading it back from a real run
 
@@ -75,8 +122,9 @@ printing zeros, because a zero here would be an invented measurement.
 
 | | State |
 |---|---|
-| Overhead on a realistic prompt (many tools, long history) | **Not measured.** The number above is the floor, not the figure. |
-| Concurrency — many agents on one shared adapter | **Not measured.** `complete(&self)`, `Arc<P>: ModelProvider` and `HttpProvider::with_client` exist for it; no load test does. |
+| Overhead on a realistic prompt (many tools, long history) | **Not measured.** The numbers above are the floor, not the figure. |
+| Tail latency under concurrency | **Measured and not explained.** p99 is 40–60× the median and moves a lot between repeats. |
+| Concurrency against a *real* provider | **Not measured.** The sweep uses a sleeping fake, so it says nothing about sockets, TLS or rate limits. |
 | Throughput, memory, allocation counts | Not measured. |
 | Comparison against Rig, pydantic-ai or anything else | Not measured, and not claimed anywhere. |
 | MCP client connect cost | Not measurable yet — the client [ships no transport](../notes/INCIDENTS.md). |

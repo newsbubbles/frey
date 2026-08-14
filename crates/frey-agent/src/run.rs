@@ -352,7 +352,7 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
     /// Returns [`RunError`]. A fatal provider failure — auth or billing — ends the run rather than
     /// being retried, so a run never degrades into producing nothing while still being billed.
     pub async fn run(&self, task: impl Into<String>) -> Result<RunOutput, RunError> {
-        let run_id = RunId::new(format!("{}-run", self.session));
+        let run_id = next_run_id(&self.session);
         let mut journal = Journal::new(run_id.clone());
         let mut warnings = Vec::new();
         let mut totals = UsageTotals::default();
@@ -748,6 +748,29 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
         finish(&mut journal, &mut warnings, self.max_turns, &totals);
         Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
+}
+
+/// A fresh id for every run.
+///
+/// **This used to be `format!("{session}-run")`,** which made the run id a pure function of the
+/// session — so every run in a session shared one, and since `Agent::new` defaults the session to
+/// the literal `"default"`, *every run in a process* shared one unless the caller knew to set a
+/// session. Sixty-four concurrent agents produced sixty-four journals with a single id between
+/// them.
+///
+/// The run id is the primary key for everything attributional: which journal belongs to which run,
+/// which `RunStarted` a frontend is watching, which record an incident refers to. Collapsing it to
+/// a constant does not fail anything at the time — it makes the records unmergeable later, which is
+/// the same failure shape as every other entry in `notes/INCIDENTS.md`.
+///
+/// Now: session, process id, and a monotonic counter. Unique across concurrent runs in a process
+/// and across concurrent processes on a host. **Not globally unique** — a recycled pid on a later
+/// boot can repeat one — and callers that need that should set distinct sessions, which is what the
+/// session is for. `RequestFingerprint` does not include the run id, so replay is unaffected.
+fn next_run_id(session: &SessionId) -> RunId {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    RunId::new(format!("{session}-{}-{n}", std::process::id()))
 }
 
 /// Microseconds, saturating. A turn lasting longer than 584,000 years is not the failure to guard.

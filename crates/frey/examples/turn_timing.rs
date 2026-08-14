@@ -11,6 +11,16 @@
 //! computed by subtraction rather than by adding the phases up, so anything happening in the loop
 //! that nobody thought to instrument shows up as `unaccounted` instead of vanishing.
 //!
+//! # This is a cold-start number, and that is most of it
+//!
+//! One turn, in a fresh process, with nothing warmed. It reads around **280 µs**, and roughly 95%
+//! of that is first-run cost: lazy initialisation, allocator growth, first-touch page faults. The
+//! `concurrency` example warms up first and then measures the same overhead at **~12 µs**.
+//!
+//! Both are real and they answer different questions. This one is what your *first* turn costs;
+//! that one is what every turn after it costs. Reporting this figure as "Frey's per-turn overhead"
+//! would overstate it by more than twentyfold, which it did for about an hour on 2026-08-14.
+//!
 //! For a real run, `frey timings <journal.jsonl>` reports the same breakdown across every turn a
 //! recorded run took.
 

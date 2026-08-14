@@ -629,26 +629,48 @@ shows up as a gap instead of disappearing. Pinned by
 
 [[claim]]
 id = "perf.overhead-is-small-on-a-minimal-prompt"
-claim = "Frey's per-turn overhead is roughly 0.3 ms."
+claim = "Frey's steady-state per-turn overhead is roughly 12 microseconds."
 stated_in = ["docs/performance.md"]
 status = "tested-only"
-settled_by = "test:every_turn_reports_where_its_time_went"
+settled_by = "test:many_agents_share_one_adapter_and_keep_their_records_apart"
 would_settle = """
-282 µs on a release build, one turn, one user message, no tools — `cargo run --release -p frey
---example turn_timing`. Segmentation is 115 µs of it and request assembly 86 µs.
+Median of 1,024 concurrent runs, release build, one user message and no tools —
+`cargo run --release -p frey --example concurrency`.
 
-**Deliberately not `settled`, because the prompt is the smallest one possible.** The two dominant
-phases both scale with prompt size: `build_segments` walks every tool definition and every turn,
-and assembly clones the request. A 200-tool catalog over a 50-turn history is the case that
-matters for the workload this framework is aimed at, and it has not been measured. Quoting 0.3 ms
-as though it were the number for a real agent would be quoting the easiest possible case.
+**This row said 282 µs for about an hour**, which was one turn in a cold process and roughly 95%
+first-run cost. See I-013. The first turn really does cost ~280 µs and that is reported separately
+rather than averaged away.
 
-Settling it: the same measurement across a realistic prompt, and a second one showing how it grows.
+Still `tested-only`, because the prompt is the smallest one possible. `build_segments` walks every
+tool definition and every turn, and assembly clones the request, so both dominant phases scale with
+prompt size. A 200-tool catalog over a 50-turn history is the case that matters and is unmeasured.
+Quoting 12 µs as the number for a real agent would be quoting the easiest case.
 """
 
 [[claim]]
-id = "perf.concurrency"
-claim = "Frey handles many concurrent agents on a shared provider adapter without degrading."
+id = "perf.median-does-not-degrade-under-concurrency"
+claim = "Frey's per-turn overhead does not degrade from 1 to 1,024 concurrent agents sharing one adapter."
+stated_in = ["docs/performance.md", "docs/why-frey.md"]
+status = "tested-only"
+settled_by = "test:many_agents_share_one_adapter_and_keep_their_records_apart"
+would_settle = """
+Median overhead is 11-18 µs from 64 agents up to 1,024, against a shared `Arc<SharedModel>`. It does
+not rise. The named test pins the correctness half — 64 agents, one adapter, distinct journals,
+phase breakdown still a breakdown — and the example measures the performance half.
+
+**The p99 is a different answer and is not claimed here.** It runs 40-60x the median and moves
+between repeats. The medians holding flat suggests scheduler jitter rather than lock contention, but
+that is an inference from two numbers, not a measurement, and characterising it needs a histogram
+nobody has built.
+
+Not `settled` because the provider is a fake that sleeps. Nothing here touches a socket, a TLS
+session, an HTTP/2 stream limit or a rate limiter, and a real fleet meets all four. This claim is
+about the framework and cannot be read as a claim about a deployment.
+"""
+
+[[claim]]
+id = "perf.concurrency-against-a-real-provider"
+claim = "Frey handles many concurrent agents against a real provider without degrading."
 status = "declared-only"
 would_settle = """
 The design is there and untested. `complete` takes `&self`, `Arc<P>` implements `ModelProvider`
