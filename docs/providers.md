@@ -26,17 +26,28 @@ enters your configuration, a struct, or a log line.
 | | Anthropic | OpenAI Responses | OpenRouter |
 |---|---|---|---|
 | Caching | explicit, ≤4 breakpoints | automatic ≥1024 tokens | automatic, upstream's |
-| **Breakpoints Frey places** | **4** | **0** | **0** |
+| **Breakpoints Frey places** | **4** | **0** | **0**, or 3 with `with_explicit_cache()` |
 | Min cacheable prefix | 512–4096, **per model** | 1024 | upstream's |
 | `input_tokens` | excludes cached | includes cached | normalised to exclude |
 | Reports cost | no | no | **yes** |
 | Reasoning | — | encrypted, must be replayed | upstream's |
 
-**Read the breakpoint row before planning around the cache planner.** Only one of the three dialects
-takes explicit breakpoints. On the other two the provider caches the prefix itself, so there is
-nothing for Frey to place and it places nothing — and the planner's *warnings* are what it
-contributes there: churn and minimum-prefix, both of which cost exactly as much on an
-automatic-caching provider.
+**Read the breakpoint row before planning around the cache planner.** By default one dialect takes
+explicit breakpoints. On the other two the provider caches the prefix itself, so there is nothing for
+Frey to place and it places nothing — and the planner's *warnings* are what it contributes there:
+churn and minimum-prefix, both of which cost exactly as much on an automatic-caching provider.
+
+`OpenRouter::with_explicit_cache()` opts into placing them for `anthropic/*` models, whose upstream
+documents `cache_control` passthrough. Three of four, not four: a Chat Completions tool object is
+`{"type": "function", …}` with no content part to carry a marker, and putting one on the wrapper
+would produce a field the upstream never reads while Frey's own survey counted it as placed — a
+measuring instrument certifying a null. The tool block is the largest stable segment in a typical
+prompt, so this is a real cost and not a rounding one; on the native Anthropic wire it is carried.
+
+The opt-in is a constructor rather than a default because the comment it sits beside stays true: a
+hardcoded table of upstream quirks rots faster than the release cycle. And **it has not been
+verified against a live upstream.** `claims.toml` records it as `tested-only` for that reason — one
+request returning non-zero `cache_creation_input_tokens` would settle it, and nobody has made one.
 
 That row comes from a measurement, not from this table. `frey doctor` encodes a representative
 request through each adapter and counts the `cache_control` markers that come out, and a test

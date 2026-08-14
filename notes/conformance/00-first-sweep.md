@@ -41,7 +41,12 @@ first : echo, get-annotated-message, get-env, get-resource-links, get-resource-r
 second: … the same twelve, plus simulate-research-query
 ```
 
-**A tool appears.** Same server, same process lifetime, same request.
+**A tool appears.** Same package, same arguments, same request — but, and this matters for anyone
+reporting it upstream, **two separate processes**: the sweep spawns, lists, and kills, twice. So this
+is not a server mutating its catalog while running; it is two runs of one server disagreeing, which
+is a weaker and stranger finding. A single-process double-list would settle which. Either way the
+consequence for a cached prompt is identical, because a client reconnecting is exactly what happens
+between agent runs.
 
 This is the failure Frey's defensive re-sorting exists for, met for the first time — and it is worth
 being precise, because the defence does not actually cover it.
@@ -79,11 +84,11 @@ containing a timestamp or counter, will do this."*
 - **`tools/list` is not `tools/call`.** Nothing here exercises a tool. The next sweep should, on the
   servers where calling something is free and side-effect-free.
 - **Four Python servers never started**, and their failures are upstream — `mcp-server-fetch` and
-  `mcp-server-time` fail with `ImportError: cannot import name 'McpError'`, `mcp-server-git` and
-  `mcp-server-sqlite` with `AttributeError: 'Server' object has no attribute 'list_tools'`. The
-  published servers are incompatible with the current release of the SDK they depend on. Their rows
-  are kept in the table because deleting them would hide an ecosystem finding, and an unreachable
-  row is explicitly **not** a pass.
+  `mcp-server-time` fail with `ImportError: cannot import name 'McpError'`, `mcp-server-git` with
+  `AttributeError: 'Server' object has no attribute 'list_tools'`, and `mcp-server-sqlite` with
+  `list_resources`. The published servers are incompatible with the current release of the SDK they
+  depend on. Their rows are kept in the table because deleting them would hide an ecosystem
+  finding, and an unreachable row is explicitly **not** a pass.
 - **Descriptions and schemas were uniformly fine.** Zero thin descriptions and zero unusable schemas
   across 67 tools. Frey's discoverability check has nothing to complain about here, which is worth
   saying plainly rather than leaving as an absence.

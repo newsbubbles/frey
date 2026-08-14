@@ -109,6 +109,31 @@ pub fn run(root: &Path, args: &[String]) -> ExitCode {
         eprintln!("could not write results: {error}");
         return ExitCode::FAILURE;
     }
+
+    // **And a dated machine-readable line**, because a claim resting on this has to go red when the
+    // sweep goes stale. The prose table is for a person; `claims.toml` cannot check it, and a claim
+    // whose evidence cannot expire is a claim that will eventually be wrong quietly.
+    //
+    // Days since the epoch rather than a timestamp: the checker reads a plain integer on purpose,
+    // since a date format is one more thing to get wrong inside a check whose only job is to be
+    // trustworthy.
+    let day = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0);
+    let record = format!(
+        "{{\"day\": {day}, \"targets\": {}, \"reached\": {}, \"stateless\": {}, \"churning\": {}, \"tools\": {}}}
+",
+        rows.len(),
+        rows.iter().filter(|r| r.reached).count(),
+        rows.iter().filter(|r| r.stateless).count(),
+        rows.iter().filter(|r| r.churns).count(),
+        rows.iter().map(|r| r.tools).sum::<usize>(),
+    );
+    if let Err(error) = std::fs::write(dir.join("results.jsonl"), record) {
+        eprintln!("could not write the dated record: {error}");
+        return ExitCode::FAILURE;
+    }
     println!("\nwrote {}", dir.join("results.md").display());
 
     // **A server that could not be reached is not a passing server.** The whole exercise is worth

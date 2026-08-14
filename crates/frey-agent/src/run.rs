@@ -436,10 +436,21 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             }
             previous = PreviousPrompt::from_segments(&fitted.keep);
 
-            // 4. Ask the model.
+            // 4. Ask the model — with the prompt the budgeter actually decided on.
+            //
+            // **This used to send `turns.clone()`.** The budgeter ran, evicted, emitted
+            // `BudgetPressure { action: "evicted 3 segment(s) freeing 40000 tokens" }`, the cache
+            // plan was computed over the survivors — and then the untrimmed history went on the
+            // wire and onto the invoice. Nothing failed, so nothing was noticed: the run succeeded
+            // and the freed tokens were billed, until a prompt overshot far enough that the
+            // provider refused it, from a framework that had just said it had made room.
+            //
+            // A generated false statement about the loop's own action, once per turn. Every other
+            // honesty defect in this project has been a sentence a person wrote.
+            let sent = evict_from_turns(&turns, &fitted.keep, !definitions.is_empty());
             let request = Request {
                 model: self.model.clone(),
-                turns: turns.clone(),
+                turns: sent,
                 tools: definitions.clone(),
                 marks: plan.marks.clone(),
                 max_output: caps.max_output.min(budget.reserve_output),
@@ -879,6 +890,46 @@ fn build_segments(definitions: &[ToolDefinition], turns: &[Turn]) -> Vec<Segment
     segments
 }
 
+/// Build the turn list the budgeter's plan describes.
+///
+/// The segment numbering is the contract from [`build_segments`]: the tool block is segment 0 when
+/// there is one, and each turn is the segment after it, in order. A turn whose segment did not
+/// survive `fit` is not sent.
+///
+/// **Then the part that is not just a filter.** Eviction drops history oldest-first, and a turn
+/// carrying tool *results* is only meaningful next to the turn carrying the calls they answer. Drop
+/// the calls and keep the results and the provider sees answers to questions nobody asked —
+/// Anthropic answer 400, and a Chat Completions upstream will either 400 or, worse, accept it and
+/// let the model reason over an orphan. So any leading turn that consists of tool results has lost
+/// its calls and goes too.
+///
+/// Trailing pairs are never at risk: `recent_history` protects the tail, and eviction only ever
+/// takes from the front.
+fn evict_from_turns(turns: &[Turn], keep: &[Segment], has_tools: bool) -> Vec<Turn> {
+    let offset = u32::from(has_tools);
+    let kept: std::collections::BTreeSet<u32> = keep.iter().map(|s| s.id.index()).collect();
+
+    let mut out: Vec<Turn> = turns
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            let id = u32::try_from(*index).unwrap_or(u32::MAX).saturating_add(offset);
+            kept.contains(&id)
+        })
+        .map(|(_, turn)| turn.clone())
+        .collect();
+
+    // A system turn is never evicted — `Budgeter` only touches `Discovered` and `History` — so the
+    // scan starts after any leading system turns and stops at the first turn that stands alone.
+    let start = out.iter().take_while(|t| t.role == Role::System).count();
+    let orphans = out[start..]
+        .iter()
+        .take_while(|turn| turn.items.iter().any(|i| matches!(i, Item::ToolResult(_))))
+        .count();
+    out.drain(start..start + orphans);
+    out
+}
+
 /// A rough token count.
 ///
 /// Deliberately crude and deliberately documented as such: it is used for budgeting and for the
@@ -1304,6 +1355,142 @@ mod tests {
             journal.events.iter().any(|e| matches!(e.kind, EventKind::RunFinished { .. })),
             "the stream must be closed on the failure path too"
         );
+    }
+
+    #[test]
+    fn what_the_budgeter_evicts_does_not_go_on_the_wire() {
+        // The defect this test exists for: `fit` evicted, said so, the cache plan was computed over
+        // the survivors — and `turns.clone()` sent the whole thing anyway. The run succeeded, so
+        // nothing looked wrong; the freed tokens were billed, and the warning naming them was a
+        // statement the loop generated about an action it had not taken.
+        //
+        // A 4,000-token window: ceiling is 4,000 − 400 reserved − 400 headroom = 3,200. Eight
+        // rounds of a 2,000-byte tool result is roughly 8,000 tokens of history, and the floor
+        // protects only the last four segments — so there is genuinely something to evict.
+        let caps = frey_core::provider_caps::ProviderCapabilities::minimal(4_000, 400);
+        let mut script: Vec<Scripted> =
+            (0..8).map(|_| Scripted::tool_calls(vec![tool_call("fs_read")])).collect();
+        script.push(Scripted::text("done"));
+        let model = ScriptedModel::new(script).with_capabilities(caps);
+
+        let host = Tools { reply: "x".repeat(2_000), ..tools(&["fs_read"]) };
+        let run = pollster::block_on(Agent::new(model.clone(), host, "test-model").run("go"))
+            .expect("the run must survive: eviction is how it survives");
+
+        assert!(
+            run.warnings.iter().any(|w| matches!(w, Warning::BudgetPressure { .. })),
+            "the fixture must actually cause eviction, or this test proves nothing: {:?}",
+            run.warnings
+        );
+
+        // What the budgeter kept is what the provider was shown. That these are different objects
+        // is the entire fix: they used to be the same one.
+        let last = model.last();
+        let sent: usize = last
+            .turns
+            .iter()
+            .flat_map(|t| &t.items)
+            .map(|i| match i {
+                Item::Text(t) => t.text.len(),
+                Item::ToolResult(r) => r.content.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            sent < 8 * 2_000,
+            "the evicted history reached the wire: {sent} bytes across {} turn(s)",
+            last.turns.len()
+        );
+        assert!(sent > 0, "eviction must not empty the prompt: {sent}");
+    }
+
+    #[test]
+    fn a_tool_result_never_travels_without_the_call_it_answers() {
+        // Eviction takes history oldest-first, which can leave a results turn whose calls are gone.
+        // Anthropic answer 400 to that; a Chat Completions upstream may instead accept it and let
+        // the model reason over an answer to a question nobody asked, which is worse.
+        let system = Turn::system("stable");
+        let ask = Turn::new(Role::Assistant, vec![tool_call("fs_read")]);
+        let answer = Turn::new(
+            Role::User,
+            vec![Item::ToolResult(ToolResultItem {
+                id: CallId::new("c1"),
+                content: "a large result".into(),
+                is_error: false,
+                bytes_elided: 0,
+                provenance: frey_core::taint::Provenance::new("t"),
+            })],
+        );
+        let next = Turn::user("and now?");
+        let turns = vec![system, ask, answer, next];
+
+        // The plan keeps the system turn and everything from the results onward — which is exactly
+        // the shape that strands the results.
+        let keep = vec![
+            Segment {
+                id: SegmentId(0),
+                kind: SegmentKind::System,
+                stability: Stability::Static,
+                hash: hash_parts(["stable"]),
+                est_tokens: 10,
+                label: "system".into(),
+            },
+            Segment {
+                id: SegmentId(2),
+                kind: SegmentKind::History,
+                stability: Stability::Volatile,
+                hash: hash_parts(["a large result"]),
+                est_tokens: 10,
+                label: "history".into(),
+            },
+            Segment {
+                id: SegmentId(3),
+                kind: SegmentKind::History,
+                stability: Stability::Volatile,
+                hash: hash_parts(["and now?"]),
+                est_tokens: 10,
+                label: "history".into(),
+            },
+        ];
+
+        let sent = evict_from_turns(&turns, &keep, false);
+        assert_eq!(sent.len(), 2, "the stranded results turn goes with its calls: {sent:?}");
+        assert_eq!(sent[0].role, Role::System);
+        assert!(
+            !sent[1].items.iter().any(|i| matches!(i, Item::ToolResult(_))),
+            "no orphan result may lead the conversation"
+        );
+    }
+
+    #[test]
+    fn a_prompt_that_fits_is_sent_whole() {
+        let turns = vec![Turn::system("s"), Turn::user("u")];
+        let keep: Vec<Segment> = [0u32, 1]
+            .into_iter()
+            .map(|id| Segment {
+                id: SegmentId(id),
+                kind: SegmentKind::History,
+                stability: Stability::Volatile,
+                hash: hash_parts(["x"]),
+                est_tokens: 1,
+                label: "l".into(),
+            })
+            .collect();
+        assert_eq!(evict_from_turns(&turns, &keep, false).len(), 2);
+
+        // And with a tool block, everything shifts by one.
+        let with_tools: Vec<Segment> = [0u32, 1, 2]
+            .into_iter()
+            .map(|id| Segment {
+                id: SegmentId(id),
+                kind: SegmentKind::History,
+                stability: Stability::Volatile,
+                hash: hash_parts(["x"]),
+                est_tokens: 1,
+                label: "l".into(),
+            })
+            .collect();
+        assert_eq!(evict_from_turns(&turns, &with_tools, true).len(), 2);
     }
 
     #[test]

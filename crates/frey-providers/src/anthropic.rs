@@ -128,7 +128,20 @@ impl Dialect for Anthropic {
         }
 
         let mut tools: Vec<Value> = request.tools.iter().map(encode_tool).collect();
-        mark_last(&mut tools, placement.tools);
+        // **A breakpoint may not land on a deferred tool.** Anthropic reject `cache_control` and
+        // `defer_loading` on the same tool with a 400, and `PresentationHint::Deferred` is the
+        // *default* — `ToolDefinition::new` produces it — so the pairing is what you get by
+        // accident rather than by trying.
+        //
+        // Refusing the mark is right rather than dropping the deferral: the deferral is what the
+        // caller asked for and the breakpoint is what Frey inferred, and between an inference and
+        // an instruction the inference gives way. The cost is a mark not placed, which is a smaller
+        // failure than a run that will not start — and it is reported, so it is not silent.
+        let deferred_tail =
+            tools.last().is_some_and(|t| t.get("defer_loading") == Some(&Value::Bool(true)));
+        if !deferred_tail {
+            mark_last(&mut tools, placement.tools);
+        }
 
         let mut body = json!({
             "model": request.model.as_str(),

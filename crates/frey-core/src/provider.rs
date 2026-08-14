@@ -178,7 +178,16 @@ pub struct Response {
     /// Which model actually served the request. Routers substitute models; the caller must be able
     /// to see when that happened, because it changes price, tokenizer, and cache behaviour.
     pub model: ModelId,
-    /// Which provider actually served it, for the same reason.
+    /// Which adapter served it.
+    ///
+    /// **Not the upstream.** Every adapter returns its own constant id — `openrouter`, not the
+    /// provider OpenRouter routed to — because no decoder in this crate reads an upstream name out
+    /// of a response body. This field distinguishes *which of your configured providers answered*,
+    /// which matters in a fleet with several, and it cannot distinguish which machine did.
+    ///
+    /// `Warning::RouteChanged` therefore detects **model** substitution and not upstream
+    /// substitution. That is the substitution that changes the tokenizer and the price; a silent
+    /// move between two hosts of the same model changes neither, and Frey cannot see it.
     pub provider: ProviderId,
 }
 

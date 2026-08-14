@@ -68,6 +68,11 @@ const SWEPT: &[&str] = &[
     "EventKind", // what Frey says happened
     "RunError",  // how a run can end
     "Item",      // what can be in a prompt or a response
+    // Added after the first sweep missed it: `Effect::InputSupplied` is a ninth orphan of exactly
+    // the class the other eight acknowledge, and leaving `Effect` out of this list is the same
+    // partial application of the method that let `Warning::RouteChanged` survive an audit whose
+    // whole purpose was finding variants with no producer.
+    "Effect", // what a run did that was not deterministic
 ];
 
 /// Find every declared-and-never-constructed variant of the swept enums.

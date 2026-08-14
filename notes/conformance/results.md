@@ -10,14 +10,10 @@ server that might.
 
 | server | reached | stateless | tools | thin descriptions | bad schemas | churns |
 |---|---|---|---|---|---|---|
-| everything | yes | handshake | 12 | 0 | 0 | **yes** |
+| memory | yes | handshake | 9 | 0 | 0 | no |
 
 Unreachable rows mean the server would not start on this machine — usually a missing
 `npx` or `uvx` — and are **not** passes.
-
-## What churned
-
-- **`everything`** — a different set of tools: echo,get-annotated-message,get-env,get-resource-links,get-resource-reference,get-structured-content,get-sum,get-tiny-image,gzip-file-as-resource,toggle-simulated-logging,toggle-subscriber-updates,trigger-long-running-operation then echo,get-annotated-message,get-env,get-resource-links,get-resource-reference,get-structured-content,get-sum,get-tiny-image,gzip-file-as-resource,toggle-simulated-logging,toggle-subscriber-updates,trigger-long-running-operation,simulate-research-query
 
 ## The headline
 

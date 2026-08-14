@@ -1,3 +1,18 @@
+> **Superseded in part, 2026-08-14.** Items A1–A4 below were the output of this audit; three of the
+> four have since moved. `A4` (`ToolHost::definitions`) is **done** — async, fallible, all five
+> implementations updated. `A3` (approvals in the loop) is **unchanged** and now carries a
+> `claims.toml` row. The audit's own method is now automated as `cargo xtask producers`, which is the
+> answer to the closing note about running it as a standing check rather than an afternoon.
+>
+> The audit also missed two things that a later sweep found, both of which are the shape it was
+> hunting: the Anthropic adapter realising one mark of four, and the Responses adapter declaring a
+> breakpoint mode the API does not have. Neither is a variant with no producer — they live in the gap
+> between a producer and a wire, which is a place *"find the producer"* cannot see. See
+> `frey_providers::marks`.
+>
+> Current state of every claim: [`claims.toml`](../../claims.toml). Current state of the programme:
+> [`notes/plan/STATUS.md`](../plan/STATUS.md).
+
 # Capability audit — 2026-08-11
 
 Against `main` at `63c717d`. 460 tests, clippy clean under `-D warnings`, every feature combination

@@ -71,6 +71,21 @@ per-provider figure with a source, or renaming the warning to say whose limit it
 """
 
 [[claim]]
+id = "cache.marks-on-a-router"
+claim = "Frey can emit cache breakpoints in OpenRouter's documented shape, for upstreams that document passthrough."
+stated_in = ["docs/providers.md"]
+status = "tested-only"
+settled_by = "test:openrouter_places_breakpoints_only_when_asked_and_only_where_documented"
+would_settle = """
+The claim was "routed to an upstream that **accepts** them", which no encode-only test can establish
+and which this project has no evidence for. What is tested is the shape: a content part carrying
+`cache_control`, on `anthropic/*` only, opt-in.
+
+One live request returning non-zero `cache_creation_input_tokens` settles it, and it is the same
+request the day-90 A/B needs — so it is gated on the same operator decision.
+"""
+
+[[claim]]
 id = "cache.saves-money"
 claim = "The planner beats what a competent developer would place by hand."
 stated_in = ["README.md#1"]
@@ -115,10 +130,16 @@ settled_by = "test:a_router_substituting_the_model_mid_run_is_reported"
 
 [[claim]]
 id = "degradation.run-always-finishes"
-claim = "Every run closes its event stream, including the ones that fail."
+claim = "A run that ends on a provider failure or a turn limit closes its event stream."
 stated_in = ["docs/agent-loop.md"]
 status = "settled"
 settled_by = "test:a_fatal_provider_failure_ends_the_run_rather_than_retrying"
+would_settle = """
+Narrowed from "every run". `finish()` is genuinely called on all five exits — verified by reading
+every return in `Agent::run` — but only three of them have a test, and `RunError::Budget` has none
+at all. The claim now says what is tested rather than what is true, which is the harder direction to
+write and the right one.
+"""
 
 [[claim]]
 id = "degradation.journal-survives-failure"
@@ -149,7 +170,7 @@ id = "degradation.tool-call-runaway"
 claim = "A response asking for more tool calls than the run permits has the excess refused, individually and readably, rather than dropped."
 stated_in = ["docs/agent-loop.md"]
 status = "settled"
-settled_by = "test:every_warning_reaches_the_journal_not_just_the_cache_planners"
+settled_by = "test:a_runaway_response_is_capped_rather_than_executed"
 
 [[claim]]
 id = "degradation.no-producer-lint"
@@ -165,6 +186,12 @@ settled_by = "test:a_variant_that_is_only_matched_on_is_reported"
 id = "cost.never-invented"
 claim = "Frey never reports a cost figure the provider did not give."
 stated_in = ["README.md#limitations"]
+status = "settled"
+settled_by = "test:usage_is_tracked_per_model_and_cost_is_not_invented"
+
+[[claim]]
+id = "cost.reaches-the-event-stream"
+claim = "The cost on a RunFinished event is the same figure the return value carries."
 status = "settled"
 settled_by = "test:a_finished_run_reports_what_it_cost_in_the_event_as_well_as_the_return_value"
 
@@ -186,6 +213,12 @@ for a design rather than being implied by a README.
 id = "taint.forbidden-flows-do-not-compile"
 claim = "Passing untrusted data where trusted data is required fails to compile."
 stated_in = ["README.md#2", "docs/security-model.md"]
+status = "settled"
+settled_by = "doctest:crates/frey-core/src/taint.rs"
+
+[[claim]]
+id = "taint.meet-and-join"
+claim = "Combining a trusted and an untrusted value does not read as trusted."
 status = "settled"
 settled_by = "test:zip_meets_integrity_and_joins_confidentiality"
 
@@ -222,8 +255,17 @@ settled_by = "test:freys_client_and_freys_server_agree_over_a_loopback"
 id = "mcp.works-with-servers-frey-did-not-write"
 claim = "Frey's MCP client lists tools from third-party servers it did not write."
 stated_in = ["docs/mcp.md", "notes/conformance/00-first-sweep.md"]
-status = "settled"
-settled_by = "test:a_server_that_grows_a_tool_between_listings_is_reported_rather_than_hidden"
+status = "operated"
+settled_by = "results:notes/conformance/results.jsonl"
+stale_after_days = 120
+would_settle = """
+Six real stdio servers answered, 67 tools. The named test uses a `FakeServer` and could not settle
+this: `notes/conformance/00-first-sweep.md` opens by calling that shape "no test at all of the
+protocol", so citing one here would have been the artifact contradicting itself two files apart.
+
+The window is 120 days because the ecosystem moves and a sweep from six months ago is a claim about
+six months ago. Re-running it costs nothing.
+"""
 
 [[claim]]
 id = "mcp.calls-tools-on-third-party-servers"
@@ -338,6 +380,25 @@ would_settle = """
 It does not. `render_outcome`'s catch-all renders it to the model as "This action needs approval
 that was not available" and the run continues. Both halves of the machinery exist; what is missing
 is a handler hook on `Agent`. The fault drill that returns `NeedsInput` from a tool is the witness.
+"""
+
+[[claim]]
+id = "approval.input-is-recorded"
+claim = "Input supplied from outside a run is recorded in the journal, so a replay can reproduce it."
+status = "declared-only"
+acknowledges_orphan = "Effect::InputSupplied"
+would_settle = """
+The **third** half of the approval machinery, and the reason `claims.toml` said "both halves exist"
+when there are three. `Effect::InputSupplied` is the record a replay would read a human's answer
+back from — declared, serialised, round-tripped by the journal tests, and never constructed, because
+nothing in the loop can ask for input in the first place.
+
+Found by widening the producer lint's swept list to include `Effect`. It was omitted on the first
+pass, which is the same partial application of the method that let `Warning::RouteChanged` survive
+the audit whose whole purpose was finding this shape. Twice now.
+
+Settled by the same handler hook as `approval.in-the-loop`: an approval that is answered and then
+replayed to the same answer.
 """
 
 [[claim]]

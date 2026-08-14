@@ -72,7 +72,7 @@ pub struct Claim {
     pub stated_in: Vec<String>,
     /// What kind of backing it has.
     pub status: Status,
-    /// `test:<fn name>` or `results:<path>`. Required above `tested-only`.
+    /// `test:<fn name>`, `doctest:<path>`, or `results:<path>`. Required above `tested-only`.
     #[serde(default)]
     pub settled_by: Option<String>,
     /// How long a results file stays evidence. Required for `operated`.
@@ -167,6 +167,23 @@ pub fn check(claims: &Claims, root: &Path, now_days: u64) -> Vec<String> {
                     claim.id
                 ));
             }
+        } else if let Some(rel) = evidence.strip_prefix("doctest:") {
+            // A `compile_fail` doctest is the strongest evidence this repository has for the taint
+            // claims — the *compiler* proves them, on every platform, rather than a snapshot of
+            // diagnostic text. It had no way to be cited, so the row cited a runtime test that did
+            // not establish the claim. A vocabulary that cannot express your best evidence pushes
+            // you towards worse evidence.
+            match std::fs::read_to_string(root.join(rel)) {
+                Err(_) => problems.push(format!(
+                    "`{}` is settled by doctests in `{rel}`, which does not exist.",
+                    claim.id
+                )),
+                Ok(body) if !body.contains("```compile_fail") => problems.push(format!(
+                    "`{}` is settled by `compile_fail` doctests in `{rel}` and there are none.",
+                    claim.id
+                )),
+                Ok(_) => {}
+            }
         } else if let Some(rel) = evidence.strip_prefix("results:") {
             match newest_record_day(&root.join(rel)) {
                 None => problems.push(format!(
@@ -189,7 +206,8 @@ pub fn check(claims: &Claims, root: &Path, now_days: u64) -> Vec<String> {
             }
         } else {
             problems.push(format!(
-                "`{}` has `settled_by = \"{evidence}\"`, which is neither `test:` nor `results:`",
+                "`{}` has `settled_by = \"{evidence}\"`, which is none of `test:`, `doctest:` or \
+                 `results:`",
                 claim.id
             ));
         }

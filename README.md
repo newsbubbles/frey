@@ -49,10 +49,16 @@ It knows each provider's rules — Anthropic's four breakpoints and per-model mi
 OpenAI's automatic caching and routing key, OpenRouter's per-upstream split — and it will not place
 a breakpoint on a segment that changed last turn.
 
-**Only Anthropic takes breakpoints.** The other two cache automatically, so there is nothing to
-place and Frey places nothing; what it contributes there is the warnings, which cost exactly as much
-to ignore. `frey doctor` prints the split per dialect, from a measurement rather than a table — each
-adapter encodes a real request and the markers in the result are counted. See
+**Breakpoints reach one dialect by default.** OpenAI Responses and OpenRouter cache automatically,
+so there is nothing to place and Frey places nothing; what it contributes there is the warnings,
+which cost exactly as much to ignore. `OpenRouter::with_explicit_cache()` opts into placing them for
+`anthropic/*` upstreams, which is the only family whose passthrough is documented.
+
+`frey doctor` prints the split from a **measurement** rather than a table: each adapter encodes a
+real request and the markers in the result are counted. That check found two bugs on its first run,
+and it is the reason the row for OpenRouter reads three of four rather than four — a Chat Completions
+tool object has no content part to carry a marker, so the tool-block breakpoint is refused there
+rather than emitted somewhere the upstream will not read it. See
 [the caching model](docs/context-and-caching.md#which-of-this-reaches-which-provider).
 
 ```

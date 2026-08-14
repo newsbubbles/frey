@@ -111,17 +111,20 @@ incidents rather than pre-buying a VPS to avoid them.
 
 **found_by: system** · ecosystem · severity: low
 
-`cargo xtask conformance` connects frey's MCP client to third-party servers. Four of the eight
-targets — `mcp-server-git`, `mcp-server-fetch`, `mcp-server-time`, `mcp-server-sqlite`, all via
-`uvx` — fail before answering anything:
+`cargo xtask conformance` connects frey's MCP client to third-party servers. Four of the **ten**
+targets — all four Python ones, via `uvx` — fail before answering anything, and with **two different
+errors**, which the first draft of this entry flattened into one:
 
 ```
-ImportError: cannot import name 'McpError' from 'mcp.shared.exceptions'
+mcp-server-fetch, mcp-server-time:  ImportError: cannot import name 'McpError'
+                                    from 'mcp.shared.exceptions'
+mcp-server-git:                     AttributeError: 'Server' object has no attribute 'list_tools'
+mcp-server-sqlite:                  AttributeError: 'Server' object has no attribute 'list_resources'
 ```
 
-The published servers are incompatible with the current release of the `mcp` Python SDK they depend
-on. Nothing to do with frey; recorded because the sweep's table would otherwise show four blank rows
-and a reader would assume the client failed.
+Both shapes say the same thing: the published servers are incompatible with the current release of
+the `mcp` Python SDK they depend on. Nothing to do with frey; recorded because the sweep's table
+would otherwise show four blank rows and a reader would assume the client failed.
 
 **Kept in the sweep deliberately.** "The upstream reference implementation is broken against the
 current SDK" is a finding about the ecosystem, and deleting the row would hide it.
@@ -158,11 +161,20 @@ First run of `deadnet drill`, against a copy of `the-log`:
 | cost-silence | the reverted `usage: {include: true}` regression | yes | 12 ms |
 | dead-turns | `gpt-oss-120b` going four-in-five to none within an hour | yes | 10 ms |
 | no-tools | a host answering with an empty catalog | yes | 14 ms |
-| unclosed | the process going away mid-run | yes | 11 ms |
+| unclosed | a transcript that ends without a closing event | yes | 11 ms |
 
-Latency here measures the *detector*, not the pipeline: the drill injects and immediately looks. End
-to end, detection is bounded by how often `deadnet watch` runs, which is the number that will matter
-once the nights are on a timer.
+**Read this table narrowly, and it was overstated in its first draft.** Latency measures the
+*detector*, not the pipeline: the drill writes manifest and journal state by hand and asks the
+watcher to read it. That establishes the alarms fire on the state they are looking for. It does
+**not** establish that a real failing night produces that state — for four of the five faults the
+production path was traced by hand and does, and for `unclosed` it does not: `write_journal` is a
+single terminal `fs::write` after the run returns, so a process that dies mid-run leaves no file at
+all rather than a truncated one. That fault therefore stands for *a transcript that ends without a
+closing event*, which is a real shape frey can produce, and not for the one the drill's own label
+originally claimed.
+
+End to end, detection is also bounded by how often `deadnet watch` runs, which is the number that
+will matter once the nights are on a timer.
 
 ---
 

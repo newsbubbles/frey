@@ -19,6 +19,7 @@ use frey_core::provider_caps::{
     CacheSupport, Modality, ProviderCapabilities, ReasoningSupport, StrictSupport,
     ToolSearchSupport,
 };
+use frey_core::segment::CacheTtl;
 use frey_core::taint::Provenance;
 use frey_core::usage::{Currency, Money, Usage};
 use serde_json::{Value, json};
@@ -26,8 +27,54 @@ use serde_json::{Value, json};
 use crate::dialect::Dialect;
 
 /// OpenRouter's OpenAI-compatible Chat Completions endpoint.
+///
+/// By default this declares **automatic** caching with no explicit breakpoints, which is the safe
+/// answer for a router that picks an upstream per request. See
+/// [`with_explicit_cache`](OpenRouter::with_explicit_cache) for the one case where that leaves money
+/// on the table, and for why it is opt-in.
 #[derive(Debug, Clone, Default)]
-pub struct OpenRouter;
+pub struct OpenRouter {
+    /// Realise cache breakpoints for upstreams that document `cache_control` passthrough.
+    explicit_cache: bool,
+}
+
+impl OpenRouter {
+    /// The default: no breakpoints, and the planner told so.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Place explicit cache breakpoints when the model is one whose upstream accepts them.
+    ///
+    /// **Opt-in, and narrow on purpose.** OpenRouter documents `cache_control` passthrough for the
+    /// Anthropic family; for most other upstreams the field is either ignored or rejected, and
+    /// neither failure is visible from here. So this changes behaviour only for models matching
+    /// `anthropic/*`, and everything else keeps the automatic answer whether or not it is on.
+    ///
+    /// A constructor rather than a default, because the comment in `capabilities` stays true and is
+    /// the reason the default is what it is: *a hardcoded table of upstream quirks rots faster than
+    /// the release cycle.* One documented family, opted into by a caller who has decided the trade,
+    /// is a different thing from a table this crate silently maintains for everyone.
+    ///
+    /// ```
+    /// # use frey_providers::openrouter::OpenRouter;
+    /// let router = OpenRouter::new().with_explicit_cache();
+    /// ```
+    ///
+    /// This is also the switch that makes `profiles::openrouter_explicit()` reachable. It had zero
+    /// callers outside its own test — a profile describing a capability no dialect ever returned.
+    #[must_use]
+    pub fn with_explicit_cache(mut self) -> Self {
+        self.explicit_cache = true;
+        self
+    }
+
+    /// Whether this model's upstream is documented to accept `cache_control`.
+    fn upstream_takes_breakpoints(&self, model: &ModelId) -> bool {
+        self.explicit_cache && model.as_str().starts_with("anthropic/")
+    }
+}
 
 /// A plain OpenAI-compatible Chat Completions server: vLLM, Ollama, LM Studio, and most of the
 /// long tail. Same wire shape, no usage accounting, no routing.
@@ -58,14 +105,27 @@ impl Dialect for OpenRouter {
         "/chat/completions"
     }
 
-    fn capabilities(&self, _model: &ModelId) -> ProviderCapabilities {
+    fn capabilities(&self, model: &ModelId) -> ProviderCapabilities {
         ProviderCapabilities {
             tool_search: ToolSearchSupport::None,
             programmatic_tool_calling: false,
             // Whether caching is automatic or needs explicit blocks depends on the upstream the
             // router picks, so the safe assumption is automatic and the planner is told no
             // breakpoints are available.
-            cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false },
+            //
+            // The consequence of that default is worth stating rather than leaving to be found: at
+            // a budget of zero the planner places nothing, which is correct — but its *warnings*
+            // still apply, and they used not to fire, because churn detection sat behind the same
+            // early return. Fixed in `frey-context`; the reasoning for the default is unchanged.
+            cache: if self.upstream_takes_breakpoints(model) {
+                CacheSupport::Explicit {
+                    max_breakpoints: 4,
+                    ttls: vec![CacheTtl::Short, CacheTtl::Long],
+                    min_prefix_tokens: 1_024,
+                }
+            } else {
+                CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false }
+            },
             reasoning: ReasoningSupport::Plain,
             strict_schema: StrictSupport::None,
             // An assumption the router cannot verify, and it is stated as one. Most models behind
@@ -92,6 +152,9 @@ impl Dialect for OpenRouter {
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
         let mut body = encode_chat(request, stream, self.capabilities(&request.model));
+        if self.upstream_takes_breakpoints(&request.model) {
+            apply_cache_marks(&mut body, request);
+        }
         // Cost is opt-in on the wire. Without this the response carries token counts and no `cost`
         // field at all, so `reports_cost: true` above is a promise the adapter breaks silently:
         // every ledger entry reads as "the provider did not say" and the one thing OpenRouter is
@@ -131,6 +194,92 @@ impl Dialect for OpenAiChat {
     fn decode(&self, body: &Value) -> Result<Response, ProviderError> {
         decode_chat(body, &self.id(), false)
     }
+}
+
+/// Attach `cache_control` to the message blocks the plan names.
+///
+/// Chat Completions has one content field per message rather than a list of blocks, so the marker
+/// goes on the message and the upstream translates. Only reached when
+/// [`OpenRouter::with_explicit_cache`] is on **and** the model is one whose upstream documents
+/// passthrough; the encoder itself makes no judgement about what sits behind a name.
+fn apply_cache_marks(body: &mut Value, request: &Request) {
+    let placement = request.mark_placement();
+    if placement.is_empty() {
+        return;
+    }
+
+    // **The tool block is deliberately not marked here**, unlike the native Anthropic adapter.
+    //
+    // Chat Completions has no content blocks in its tool objects — a tool is
+    // `{"type": "function", "function": {...}}` — and `cache_control` on that wrapper is an open
+    // feature request against OpenRouter rather than a supported field. Writing it would produce a
+    // marker that goes nowhere while `count_cache_control` counted it, which turns the survey from
+    // a measurement into a certificate for a null. That is a worse failure than not placing the
+    // mark, because it is a *measuring instrument* reporting success.
+    //
+    // The cost is real and is stated in `docs/providers.md`: the largest stable segment in a
+    // typical prompt cannot carry a breakpoint through this dialect. On the Anthropic wire it can.
+
+    // Turns do **not** map one-for-one to messages: a turn carrying tool results explodes into
+    // several, and one carrying only reasoning produces none. So a plan's turn index cannot index
+    // `messages` — walk both and count. Getting this wrong would place a breakpoint on a different
+    // message than the planner chose, which is worse than placing none: it caches a prefix nobody
+    // reasoned about and reports success.
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    let mut at = 0usize;
+    for (index, turn) in request.turns.iter().enumerate() {
+        let produced = messages_for(turn);
+        if produced == 0 {
+            continue;
+        }
+        if let Some(ttl) = placement.turns.get(&index)
+            && let Some(message) = messages.get_mut(at + produced - 1)
+        {
+            mark_message(message, *ttl);
+        }
+        at += produced;
+    }
+}
+
+/// How many Chat Completions messages one turn encodes to.
+///
+/// Mirrors `encode_chat` exactly: every tool result is its own message, and text or tool calls
+/// contribute one more between them. A turn that encodes to nothing contributes none, which is why
+/// this cannot be assumed to be one.
+fn messages_for(turn: &frey_core::item::Turn) -> usize {
+    let results = turn.items.iter().filter(|i| matches!(i, Item::ToolResult(_))).count();
+    let has_body = turn.items.iter().any(|i| matches!(i, Item::Text(_) | Item::ToolCall(_)));
+    results + usize::from(has_body)
+}
+
+/// Put the breakpoint where OpenRouter documents it: on a content **part**, not on the message.
+///
+/// Chat Completions allows `content` to be a plain string, and `encode_chat` emits one because that
+/// is what every upstream accepts. But `cache_control` is documented on a content part, so a marker
+/// hung beside a string `content` is a field the upstream has no reason to read — accepted, ignored,
+/// and indistinguishable from working.
+///
+/// So a marked message is rewritten into the one-part array form. Only marked messages: rewriting
+/// every message would change the bytes of every request Frey has ever sent through this dialect to
+/// buy nothing, and the tail of OpenAI-compatible servers that only accept a string is long.
+fn mark_message(message: &mut Value, ttl: CacheTtl) {
+    let Some(text) = message.get("content").and_then(Value::as_str).map(str::to_string) else {
+        // Already an array, or absent. An absent content is a message carrying only tool calls,
+        // which has no part to mark.
+        return;
+    };
+    message["content"] = json!([{
+        "type": "text",
+        "text": text,
+        "cache_control": ephemeral(ttl),
+    }]);
+}
+
+fn ephemeral(ttl: CacheTtl) -> Value {
+    json!({"type": "ephemeral", "ttl": match ttl {
+        CacheTtl::Short => "5m",
+        CacheTtl::Long => "1h",
+    }})
 }
 
 fn encode_chat(request: &Request, stream: bool, caps: ProviderCapabilities) -> Value {
@@ -414,13 +563,13 @@ mod tests {
 
     #[test]
     fn a_reported_cost_is_authoritative_and_an_absent_one_is_not_invented() {
-        let usage = OpenRouter.decode(&body()).unwrap().usage;
+        let usage = OpenRouter::new().decode(&body()).unwrap().usage;
         assert_eq!(usage.reported_cost, Some(Money::usd(0.0125)));
 
         let mut without = body();
         without["usage"].as_object_mut().unwrap().remove("cost");
         assert_eq!(
-            OpenRouter.decode(&without).unwrap().usage.reported_cost,
+            OpenRouter::new().decode(&without).unwrap().usage.reported_cost,
             None,
             "absent means unknown, not zero"
         );
@@ -438,7 +587,7 @@ mod tests {
             max_output: 64,
             ..Request::default()
         };
-        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let encoded = OpenRouter::new().encode(&request, false).unwrap();
         assert_eq!(encoded["usage"], json!({"include": true}));
 
         // Not on a plain Chat Completions server: it does not report cost, and the key would be an
@@ -470,7 +619,7 @@ mod tests {
             "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
         });
 
-        let response = OpenRouter.decode(&body).unwrap();
+        let response = OpenRouter::new().decode(&body).unwrap();
         assert_eq!(response.stop, StopReason::MaxTokens, "truncation is still truncation");
         assert_eq!(response.items.len(), 1, "the thinking is the turn: {:?}", response.items);
         let Item::Reasoning(reasoning) = &response.items[0] else {
@@ -490,7 +639,7 @@ mod tests {
                 "message": {"role": "assistant", "content": "ready", "reasoning": "thinking"}
             }]
         });
-        let items = OpenRouter.decode(&body).unwrap().items;
+        let items = OpenRouter::new().decode(&body).unwrap().items;
         assert!(matches!(items[0], Item::Reasoning(_)), "{items:?}");
         assert!(matches!(items[1], Item::Text(_)), "{items:?}");
     }
@@ -521,7 +670,7 @@ mod tests {
             }]
         });
 
-        let items = OpenRouter.decode(&body).unwrap().items;
+        let items = OpenRouter::new().decode(&body).unwrap().items;
         let Item::ToolCall(call) = &items[0] else { panic!("{items:?}") };
         assert_eq!(call.args, json!({}), "absent arguments are an empty object, not null");
 
@@ -532,7 +681,7 @@ mod tests {
             max_output: 64,
             ..Request::default()
         };
-        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let encoded = OpenRouter::new().encode(&request, false).unwrap();
         let arguments = encoded["messages"][0]["tool_calls"][0]["function"]["arguments"]
             .as_str()
             .expect("arguments are a string on the wire");
@@ -556,13 +705,13 @@ mod tests {
     fn the_upstream_that_actually_served_the_request_is_reported() {
         // A router substituting a model changes price, tokenizer, and cache validity. A caller that
         // cannot see the substitution cannot account for any of it.
-        let response = OpenRouter.decode(&body()).unwrap();
+        let response = OpenRouter::new().decode(&body()).unwrap();
         assert_eq!(response.model, ModelId::new("moonshotai/kimi-k2"));
     }
 
     #[test]
     fn cached_tokens_are_subtracted_from_the_prompt_total() {
-        let usage = OpenRouter.decode(&body()).unwrap().usage;
+        let usage = OpenRouter::new().decode(&body()).unwrap().usage;
         assert_eq!(usage.input, 500);
         assert_eq!(usage.cache_read, 1_500);
         assert_eq!(usage.cache_write, 500);
@@ -571,7 +720,7 @@ mod tests {
 
     #[test]
     fn tool_calls_survive_the_string_encoded_arguments_convention() {
-        let response = OpenRouter.decode(&body()).unwrap();
+        let response = OpenRouter::new().decode(&body()).unwrap();
         let Item::ToolCall(call) = &response.items[0] else { panic!("expected a tool call") };
         assert_eq!(call.name, ToolName::new("fs_read"));
         assert_eq!(call.args, json!({"path": "a"}));
@@ -590,7 +739,7 @@ mod tests {
             max_output: 100,
             ..Request::default()
         };
-        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let encoded = OpenRouter::new().encode(&request, false).unwrap();
         assert_eq!(encoded["tools"][0]["function"]["name"], json!("fs_read"));
     }
 
@@ -640,7 +789,7 @@ mod tests {
             max_output: 100,
             ..Request::default()
         };
-        let body = OpenRouter.encode(&request, false).unwrap();
+        let body = OpenRouter::new().encode(&request, false).unwrap();
         assert!(body.get("parallel_tool_calls").is_none(), "absent means the provider default");
     }
 
@@ -656,7 +805,7 @@ mod tests {
         request.extra.insert("parallel_tool_calls".into(), json!(false));
         request.extra.insert("session_id".into(), json!("mine"));
 
-        let body = OpenRouter.encode(&request, false).unwrap();
+        let body = OpenRouter::new().encode(&request, false).unwrap();
         assert_eq!(body["parallel_tool_calls"], json!(false));
         assert_eq!(body["session_id"], json!("mine"), "the caller's value, not the adapter's");
     }
@@ -665,7 +814,10 @@ mod tests {
     fn a_session_id_is_sent_for_sticky_routing() {
         let request =
             Request { cache_key: Some("run-7".into()), max_output: 100, ..Request::default() };
-        assert_eq!(OpenRouter.encode(&request, false).unwrap()["session_id"], json!("run-7"));
+        assert_eq!(
+            OpenRouter::new().encode(&request, false).unwrap()["session_id"],
+            json!("run-7")
+        );
     }
 
     #[test]
@@ -685,7 +837,7 @@ mod tests {
             max_output: 100,
             ..Request::default()
         };
-        let encoded = OpenRouter.encode(&request, false).unwrap();
+        let encoded = OpenRouter::new().encode(&request, false).unwrap();
         assert_eq!(encoded["messages"][0]["role"], json!("tool"));
         assert_eq!(encoded["messages"][0]["tool_call_id"], json!("call_1"));
     }

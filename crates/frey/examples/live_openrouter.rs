@@ -142,7 +142,7 @@ async fn main() {
     }
 
     let provider = HttpProvider::new(
-        Arc::new(OpenRouter),
+        Arc::new(OpenRouter::new()),
         "https://openrouter.ai/api/v1",
         Auth::Bearer { env: "OPENROUTER_API_KEY".into() },
     )
