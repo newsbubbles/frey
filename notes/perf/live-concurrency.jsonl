@@ -1,0 +1,2 @@
+{"concurrency":32,"cost_micros":53,"day":20679,"failures":0,"frey_ppm":37,"levels":[1,4,16,32],"model":"qwen/qwen3.7-flash","overhead_us_median":26,"provider_ms_median":741,"turns":53}
+{"concurrency":32,"cost_micros":102,"day":20679,"failures":0,"frey_ppm":28,"levels":[1,4,16,32],"model":"deepseek/deepseek-v4-flash","overhead_us_median":30,"provider_ms_median":1043,"turns":53}

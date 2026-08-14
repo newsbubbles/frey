@@ -286,16 +286,22 @@ impl TurnTiming {
         self.total_us.saturating_sub(self.provider_us).saturating_sub(self.tools_us)
     }
 
-    /// The share of the turn Frey is responsible for, in per-mille.
+    /// The share of the turn Frey is responsible for, in **parts per million**.
     ///
-    /// Per-mille rather than a percentage because on a real turn this is usually under 1%, and
-    /// integers rather than a float because this goes in a journal that gets diffed.
+    /// **This was per-mille until the first measurement against a live provider**, where it read
+    /// `0` on every row of every level of both models — 30 µs of framework against 800 ms of
+    /// network rounds to nothing at one part in a thousand. A column of zeros is not a result, it
+    /// is a unit that cannot express the result, and the fake-provider sweep could never have shown
+    /// that because its latency was a constant somebody chose.
+    ///
+    /// Parts per million puts a realistic turn in the tens: ~45 ppm at 32 µs against 700 ms. Still
+    /// an integer, because this goes in a journal that gets diffed.
     #[must_use]
-    pub fn overhead_permille(&self) -> u64 {
+    pub fn overhead_ppm(&self) -> u64 {
         if self.total_us == 0 {
             return 0;
         }
-        self.overhead_us().saturating_mul(1000) / self.total_us
+        self.overhead_us().saturating_mul(1_000_000) / self.total_us
     }
 
     /// The phases Frey instruments, summed — which is **not** [`Self::overhead_us`].
@@ -404,9 +410,10 @@ mod tests {
             total_us: 2_500_400,
         };
         assert_eq!(t.overhead_us(), 400, "the framework's share, not the turn's wall-clock");
-        // 400/2_500_400 rounds to 0 per-mille, which is the honest answer and the reason this is
-        // reported alongside the microseconds rather than instead of them.
-        assert_eq!(t.overhead_permille(), 0);
+        // 159 ppm — 0.016% of the turn, truncated rather than rounded, which is the right
+        // direction for a figure that will be quoted. In per-mille this read `0`, and a column of
+        // zeros against a live provider is what sent the unit back for a rewrite.
+        assert_eq!(t.overhead_ppm(), 159);
         assert_eq!(t.accounted_us(), 400, "every microsecond is attributed to a named phase");
     }
 
@@ -438,7 +445,7 @@ mod tests {
 
     #[test]
     fn a_turn_that_took_no_time_does_not_divide_by_zero() {
-        assert_eq!(TurnTiming::default().overhead_permille(), 0);
+        assert_eq!(TurnTiming::default().overhead_ppm(), 0);
     }
 
     #[test]

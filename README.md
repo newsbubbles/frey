@@ -19,7 +19,7 @@ run. The pieces are real and tested; calling them is currently yours to do. Reco
 >
 > Every claim on this page has a row in **[`claims.toml`](claims.toml)** with a status and a link to
 > whatever stands behind it, checked on every push. Today that is **61 rows: 29 settled by a named
-> test, 1 operated, 6 tested-only, 15 unevidenced, and 10 retracted** — retracted meaning the claim
+> test, 2 operated, 6 tested-only, 14 unevidenced, and 10 retracted** — retracted meaning the claim
 > was made here and is now withdrawn, kept in the file because deleting it would hide that it was
 > ever made.
 >

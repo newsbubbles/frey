@@ -78,6 +78,6 @@ fn main() {
         println!("  {:-<40}", "");
         println!("  {:<12} {:>8} µs   frey's share", "OVERHEAD", timing.overhead_us());
         println!("  {:<12} {:>8} µs", "turn total", timing.total_us);
-        println!("\n  {}‰ of this turn was Frey.", timing.overhead_permille());
+        println!("\n  {} ppm of this turn was Frey.", timing.overhead_ppm());
     }
 }

@@ -133,6 +133,35 @@ between repeats. The bottom row has 1,024 and is the one to trust.
 says it is scheduler jitter rather than contention, but that is an inference and not a measurement:
 characterising it properly needs repeats and a histogram, which do not exist.
 
+### Against a real provider
+
+`cargo run --release -p frey --example live_concurrency` — the same sweep with OpenRouter on the
+other end instead of a sleeping fake. Flash-tier models, one turn each, reasoning explicitly off,
+**capped at 128 requests** because Frey has no spend cap of its own and the ceiling has to live
+somewhere.
+
+| model | agents | overhead µs | provider ms | **frey ppm** | failed |
+|---|---|---|---|---|---|
+| qwen/qwen3.7-flash | 16 | 32 | 708 | 51 | 0 |
+| qwen/qwen3.7-flash | 32 | 26 | 741 | **37** | 0 |
+| deepseek/deepseek-v4-flash | 16 | 22 | 1,171 | 16 | 0 |
+| deepseek/deepseek-v4-flash | 32 | 30 | 1,043 | **28** | 0 |
+
+**Frey is 16–51 parts per million of a real turn** — between 0.0016% and 0.005%. And **zero failures
+at 32 concurrent** on one shared adapter against a live router: no rate limiting, no connection-pool
+exhaustion, no 402.
+
+106 paid requests. **$0.00015.**
+
+This run also broke a type written three hours earlier. `overhead_permille` read `0` on every row of
+every level of both models, because 30 µs against 800 ms rounds to nothing at one part in a
+thousand. A column of zeros is not a result, it is a unit that cannot express the result — and the
+fake-provider sweep could never have shown that, since its latency was a constant somebody chose.
+The method is `overhead_ppm` now.
+
+Dated record: [`notes/perf/live-concurrency.jsonl`](../notes/perf/live-concurrency.jsonl), so the
+claim resting on it expires.
+
 ### What this cannot tell you
 
 No sockets, no TLS, no HTTP/2 stream limits, no rate limits, no DNS. A flat median here means *Frey*
@@ -161,7 +190,7 @@ printing zeros, because a zero here would be an invented measurement.
 |---|---|
 | Overhead on a realistic prompt | **Measured** — see above. ~16 µs per tool per turn; history barely matters. |
 | Tail latency under concurrency | **Measured and not explained.** p99 is 40–60× the median and moves a lot between repeats. |
-| Concurrency against a *real* provider | **Not measured.** The sweep uses a sleeping fake, so it says nothing about sockets, TLS or rate limits. |
+| Concurrency at more than 32 agents against a real provider | **Not measured.** 32 was clean; the cliff, if there is one, is above that. |
 | Throughput, memory, allocation counts | Not measured. |
 | Comparison against Rig, pydantic-ai or anything else | Not measured, and not claimed anywhere. |
 | MCP client connect cost | Not measurable yet — the client [ships no transport](../notes/INCIDENTS.md). |

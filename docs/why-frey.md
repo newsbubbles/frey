@@ -89,7 +89,7 @@ Frey ships [`claims.toml`](../claims.toml) — every claim in its README and doc
 and a link to whatever stands behind it, **checked in CI on every push**. A test that gets renamed
 unsettles the claim that cited it. Evidence with a date on it expires.
 
-Today: **61 rows — 29 settled by a named test, 1 operated, 6 tested-only, 15 unevidenced, 10
+Today: **61 rows — 29 settled by a named test, 2 operated, 6 tested-only, 14 unevidenced, 10
 retracted.** The retracted ones are claims this repository made and withdrew; they are kept in the
 file because deleting them would hide that they were ever made.
 
@@ -150,6 +150,8 @@ no incidents is indistinguishable from a project with no instruments.
   [performance](performance.md).
 - **The median does not degrade from 1 to 1,024 concurrent agents** on one shared adapter. The p99
   does, by 40–60×, and that is written down rather than omitted.
+- **Against a live provider: 16–51 parts per million of a real turn**, and 32 concurrent agents on
+  one shared adapter with zero failures. 106 paid requests, $0.00015.
 
 **Operating**
 - Replay reproduces a run and diverges loudly at the first mismatch
@@ -165,8 +167,8 @@ Lookback checking · OpenRouter breakpoints for `anthropic/*` · agent-CLI deleg
 - **Progressive disclosure.** Tools, skills and code-mode as three views of one catalog is built and
   **not wired into the loop**, which takes a fixed tool list once per run.
 - The planner beating a competent hand-placed breakpoint — see the honest ceiling below
-- **Concurrency against a real provider.** The sweep above uses a sleeping fake, so it says nothing
-  about sockets, TLS, HTTP/2 stream limits or rate limits.
+- **Concurrency above 32 agents against a real provider.** 32 was clean, so the cliff, if there is
+  one, is above it and nobody has looked.
 - **Overhead on a realistic prompt.** The figures above are one message and no tools; segmentation
   and assembly both scale with prompt size and neither has been measured at scale.
 - **Why the p99 tail exists.** Measured, not explained.

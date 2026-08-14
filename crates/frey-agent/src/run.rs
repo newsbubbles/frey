@@ -799,7 +799,7 @@ fn finish_turn(journal: &mut Journal, turn: u32, timing: TurnTiming) {
         turn,
         total_us = timing.total_us,
         overhead_us = timing.overhead_us(),
-        overhead_permille = timing.overhead_permille(),
+        overhead_ppm = timing.overhead_ppm(),
         segment_us = timing.segment_us,
         budget_us = timing.budget_us,
         plan_us = timing.plan_us,
