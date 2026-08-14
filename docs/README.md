@@ -4,6 +4,7 @@ Start here.
 
 | Page | Read it when |
 |---|---|
+| [Why Frey](why-frey.md) | You are comparing this against pydantic-ai, Rig, LangGraph or the AI SDK. |
 | [Getting started](getting-started.md) | You want a working agent in ten minutes. |
 | [Providers](providers.md) | You need to pick one, or make Frey talk to something it has never heard of. |
 | [Tools](tools.md) | You are writing the things your agent can do. |
