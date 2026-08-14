@@ -56,7 +56,7 @@ Two claims are currently wrong rather than merely optimistic, and both are fixed
 | Argument validation | loop **and** MCP server | `check_arguments` before every dispatch |
 | Caller policy | `Agent::run` | `PolicyLayer::check` before every dispatch |
 | Typed errors | loop + MCP server | `ToolError` audience split reaches both surfaces |
-| Journal + replay | `Agent::run` | every non-deterministic effect, round-trips whole |
+| Journal | `Agent::run` | every non-deterministic effect, round-trips whole |
 | Usage + cost | `Agent::run` | `UsageTotals`, cost `Reported` not estimated |
 | Warnings | `Agent::run` | 7 variants emitted; `Display` added |
 | Transcript events | `Agent::run` | 11 of 12 `EventKind` variants emitted |
@@ -93,6 +93,7 @@ outside its own crate: in each case the only hits are prelude re-exports.
 | `ModelProvider::stream` | complete | `Agent::run` only calls `complete`. |
 | `Tool` trait | two impls, both tests | Nothing consumes it. `Toolset` and `ToolHost` are the live abstractions. |
 | `#[frey::tool]` | generates a struct | It does **not** implement `Tool`, `Toolset` or `ToolHost`. You still write the adapter. |
+| `Replay` | complete | **Corrected — this audit first listed replay as Wired and it is not.** `Replay::next_response` has zero callers outside `journal.rs`, and `Agent::run` never mentions it. Recording is wired; replaying is yours to drive. |
 
 ---
 
