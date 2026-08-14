@@ -77,6 +77,14 @@ pub fn doctor(json: bool) -> ExitCode {
         format!("controls actually available here: {:?}", availability.controls.controls()),
     ));
 
+    // Measured, not tabulated: each dialect encodes a representative request and the markers in
+    // the result are counted. It is the check that found OpenAI declaring an explicit breakpoint
+    // mode the Responses API does not have.
+    let survey = frey::providers::marks::survey();
+    let rows: Vec<(&str, u8, usize, bool)> =
+        survey.iter().map(|s| (s.provider, s.budget, s.realised, s.automatic)).collect();
+    report.findings.extend(frey::harness::doctor::check_cache_marks(&rows));
+
     report.findings.extend(check_cost_reporting(&profiles::opus5()));
     report.findings.push(Finding::info(
         "profiles.checked",

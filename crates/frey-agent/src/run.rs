@@ -33,15 +33,46 @@ use crate::journal::{Effect, Journal, effect_of};
 pub const DEFAULT_MAX_TOOL_CALLS_PER_TURN: u32 = 32;
 
 /// Why a run ended.
+///
+/// **Every variant that can happen mid-run carries the journal.** The turn-limit case earned that
+/// first — its own advice is to read the transcript, and there was no way to. The provider and
+/// budget cases need it for a different reason and arguably a better one: they are the failures that
+/// arrive at three in the morning on an unattended run, and a record that goes out of scope with the
+/// error is a night that leaves nothing behind. Use [`journal`](Self::journal) or
+/// [`into_journal`](Self::into_journal) rather than matching, so a new variant does not silently
+/// stop being recorded.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RunError {
     /// The provider failed in a way that ends the run.
-    #[error(transparent)]
-    Provider(#[from] ProviderError),
+    #[error("{source}")]
+    Provider {
+        /// What the provider said.
+        #[source]
+        source: ProviderError,
+        /// What the run recorded before it failed.
+        journal: Box<Journal>,
+    },
     /// The prompt could not be made to fit.
-    #[error(transparent)]
-    Budget(#[from] frey_context::budget::DoesNotFit),
+    #[error("{source}")]
+    Budget {
+        /// What did not fit.
+        #[source]
+        source: frey_context::budget::DoesNotFit,
+        /// What the run recorded before it stopped fitting.
+        journal: Box<Journal>,
+    },
+    /// The tool catalog could not be listed, so there is no agent to run.
+    ///
+    /// Distinct from a *reduced* catalog, which is not an error: see [`ToolHost::definitions`].
+    #[error("the tool catalog could not be listed: {source}")]
+    ToolCatalog {
+        /// Why the host could not list its tools.
+        #[source]
+        source: ToolError,
+        /// What the run recorded before it gave up, which is very little by design.
+        journal: Box<Journal>,
+    },
     /// The loop hit its turn limit.
     ///
     /// Carries the journal, because this error's own advice is to read the transcript and there was
@@ -64,6 +95,35 @@ pub enum RunError {
         /// What was wanted.
         what: String,
     },
+}
+
+impl RunError {
+    /// What the run recorded before it failed, when there is a record.
+    ///
+    /// `None` means the failure happened before the loop produced one, and not that nothing was
+    /// worth keeping. Every variant the loop itself returns carries a record.
+    #[must_use]
+    pub fn journal(&self) -> Option<&Journal> {
+        match self {
+            Self::Provider { journal, .. }
+            | Self::Budget { journal, .. }
+            | Self::ToolCatalog { journal, .. }
+            | Self::TurnLimit { journal, .. } => Some(journal),
+            _ => None,
+        }
+    }
+
+    /// Take the record, for a caller that is about to persist it.
+    #[must_use]
+    pub fn into_journal(self) -> Option<Journal> {
+        match self {
+            Self::Provider { journal, .. }
+            | Self::Budget { journal, .. }
+            | Self::ToolCatalog { journal, .. }
+            | Self::TurnLimit { journal, .. } => Some(*journal),
+            _ => None,
+        }
+    }
 }
 
 /// What a finished run produced.
@@ -121,8 +181,29 @@ impl RunOutput {
 
 /// Something the loop can call.
 pub trait ToolHost: Send + Sync {
-    /// The tools visible this step, in presentation order.
-    fn definitions(&self) -> Vec<ToolDefinition>;
+    /// The tools visible this run, in presentation order.
+    ///
+    /// **Async and fallible**, because a catalog usually lives somewhere that can fail: an MCP
+    /// server over HTTP, a database, another process. The synchronous infallible version of this
+    /// method was Frey's most-reported design defect — four independent implementations, in four
+    /// projects, all ended in `unwrap_or_default()` or a silent `continue`, because there was
+    /// nowhere else for the error to go. That turns *the tool server is down* into *this agent has
+    /// no tools*, and a model told it has no tools does not stop: it explains at length and
+    /// confidently why the task was impossible, into a corpus nobody reads until morning.
+    ///
+    /// # Errors
+    /// Returning `Err` **fails the run**, with the journal preserved. That is the right answer when
+    /// the catalog is unreachable: an agent with no tools is not a degraded agent, it is a
+    /// different one.
+    ///
+    /// Returning `Ok` with *fewer* tools than usual does not fail the run — presenting a reduced
+    /// catalog is a legitimate answer when part of it is reachable — but the loop will not let it
+    /// pass in silence either. An empty catalog is reported as a degraded capability whatever
+    /// produced it, including a host that swallowed its own error on the way here.
+    ///
+    /// Called **once per run**, not once per turn: a tool block that changes between turns rewrites
+    /// the cached prefix, which is the single most expensive thing this framework exists to notice.
+    fn definitions(&self) -> impl Future<Output = Result<Vec<ToolDefinition>, ToolError>> + Send;
 
     /// Run one.
     fn call(
@@ -287,7 +368,38 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
 
         let caps = self.provider.capabilities(&self.model);
         let budget = ContextBudget::from_capabilities(&caps);
-        let definitions = self.tools.definitions();
+
+        // Listed once, before the first turn. A catalog that changes between turns rewrites the
+        // cached prefix; a catalog that cannot be listed at all is not a degraded agent but a
+        // different one, so it ends the run here rather than presenting an empty tool block and
+        // letting the model explain at length why nothing was possible.
+        let definitions = match self.tools.definitions().await {
+            Ok(definitions) => definitions,
+            Err(source) => {
+                finish(&mut journal, 0, &totals);
+                return Err(RunError::ToolCatalog { source, journal: Box::new(journal) });
+            }
+        };
+        if definitions.is_empty() {
+            // Reached when a host returns `Ok(vec![])` — including one that swallowed its own
+            // error on the way here, which is what every implementation of the old infallible
+            // signature did. Frey cannot stop a caller doing that; it can refuse to be quiet.
+            warn(
+                &mut journal,
+                &mut warnings,
+                0,
+                Warning::Degraded {
+                    capability: "tool-catalog".into(),
+                    fallback: "no tools were presented; the model can only answer from the prompt"
+                        .into(),
+                },
+            );
+        }
+
+        // Which upstream served the previous turn. A router substituting one mid-run changes the
+        // tokenizer, the price, and whether the warm cache still exists — none of which the
+        // provider reports as an error.
+        let mut served_by: Option<(frey_core::ids::ProviderId, frey_core::ids::ModelId)> = None;
 
         for turn_index in 0..self.max_turns {
             let span = tracing::info_span!(
@@ -302,17 +414,21 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             let segments = build_segments(&definitions, &turns);
 
             // 2. Fit it. Eviction is never silent.
-            let fitted = Budgeter::fit(&segments, &budget)?;
-            warnings.extend(fitted.warnings.iter().cloned());
+            let fitted = match Budgeter::fit(&segments, &budget) {
+                Ok(fitted) => fitted,
+                Err(source) => {
+                    finish(&mut journal, turn_index, &totals);
+                    return Err(RunError::Budget { source, journal: Box::new(journal) });
+                }
+            };
+            for warning in &fitted.warnings {
+                warn(&mut journal, &mut warnings, turn_index, warning.clone());
+            }
 
             // 3. Plan the cache against the segments that survived.
             let plan = CachePlanner::plan(&fitted.keep, &previous, &caps);
-            warnings.extend(plan.warnings.iter().cloned());
             for warning in &plan.warnings {
-                journal.record_event(Event::root(
-                    SeqId(turn_index),
-                    EventKind::Warned { warning: warning.clone() },
-                ));
+                warn(&mut journal, &mut warnings, turn_index, warning.clone());
             }
             previous = PreviousPrompt::from_segments(&fitted.keep);
 
@@ -333,26 +449,65 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
                 ..Request::default()
             };
 
-            let response = self.provider.complete(request.clone()).await?;
+            let response = match self.provider.complete(request.clone()).await {
+                Ok(response) => response,
+                Err(source) => {
+                    // The failure that arrives at three in the morning. Everything the run did
+                    // before it leaves with the error rather than going out of scope with it.
+                    finish(&mut journal, turn_index, &totals);
+                    return Err(RunError::Provider { source, journal: Box::new(journal) });
+                }
+            };
             journal.record(effect_of(&request, &response));
-            totals
+
+            // Did the router move us? Compared turn to turn rather than against the requested
+            // model, because both sides of this comparison come from the provider and so cannot
+            // disagree merely about naming — a `:floor` or `:nitro` suffix the router strips would
+            // otherwise read as a substitution on every first turn.
+            let served = (response.provider.clone(), response.model.clone());
+            if let Some(previous_route) = served_by.replace(served.clone())
+                && previous_route != served
+            {
+                warn(
+                    &mut journal,
+                    &mut warnings,
+                    turn_index,
+                    Warning::RouteChanged {
+                        from: format!("{}:{}", previous_route.0, previous_route.1).into(),
+                        to: format!("{}:{}", served.0, served.1).into(),
+                    },
+                );
+            }
+
+            if totals
                 .record(&format!("{}:{}", response.provider, response.model), &response.usage)
-                .unwrap_or_else(|_| {
-                    warnings.push(Warning::Degraded {
+                .is_err()
+            {
+                warn(
+                    &mut journal,
+                    &mut warnings,
+                    turn_index,
+                    Warning::Degraded {
                         capability: "cost-accounting".into(),
                         fallback: "a call reported a different currency; totals are partial".into(),
-                    });
-                });
+                    },
+                );
+            }
             journal.record_event(Event::root(
                 SeqId(turn_index),
                 EventKind::UsageUpdated { usage: response.usage.clone() },
             ));
 
             if response.stop.is_truncated() {
-                warnings.push(Warning::Degraded {
-                    capability: "output-length".into(),
-                    fallback: "the model hit its output cap; the answer is incomplete".into(),
-                });
+                warn(
+                    &mut journal,
+                    &mut warnings,
+                    turn_index,
+                    Warning::Degraded {
+                        capability: "output-length".into(),
+                        fallback: "the model hit its output cap; the answer is incomplete".into(),
+                    },
+                );
             }
 
             let calls: Vec<_> = response
@@ -369,25 +524,25 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             let blocks_added =
                 u32::try_from(response.items.len() + calls.len()).unwrap_or(u32::MAX);
             if let Some(warning) = check_lookback(blocks_added) {
-                warnings.push(warning);
+                warn(&mut journal, &mut warnings, turn_index, warning);
             }
 
             turns.push(Turn::new(Role::Assistant, response.items.clone()));
 
             if calls.is_empty() || response.stop == StopReason::EndTurn {
-                journal.record_event(Event::root(
-                    SeqId(turn_index),
-                    EventKind::RunFinished { totals: totals.clone(), cost: None },
-                ));
+                finish(&mut journal, turn_index, &totals);
                 // The same warning on every turn is noise that trains people to ignore warnings.
                 // Each distinct one is reported once, in the order it first appeared.
-                warnings.dedup();
+                //
+                // `dedup` was wrong here and had been since it was written: it removes only
+                // *consecutive* duplicates, and the two append sites above guarantee interleaving,
+                // so a churn warning repeating every turn survived as one entry per turn. The
+                // journal still holds every occurrence — that is the record — and this list is the
+                // summary a caller reads.
+                dedup_keeping_first(&mut warnings);
                 return Ok(RunOutput {
                     items: response.items,
-                    cost: totals.reported_cost.map(|amount| CostEstimate {
-                        amount,
-                        source: frey_core::usage::PricingSource::Reported,
-                    }),
+                    cost: reported_cost(&totals),
                     totals,
                     journal,
                     warnings,
@@ -403,10 +558,12 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             // invented premise. A refusal it can read makes the next turn a retry with fewer calls.
             let requested = u32::try_from(calls.len()).unwrap_or(u32::MAX);
             if requested > self.max_tool_calls_per_turn {
-                warnings.push(Warning::ToolCallsCapped {
-                    requested,
-                    cap: self.max_tool_calls_per_turn,
-                });
+                warn(
+                    &mut journal,
+                    &mut warnings,
+                    turn_index,
+                    Warning::ToolCallsCapped { requested, cap: self.max_tool_calls_per_turn },
+                );
             }
 
             let mut results = Vec::new();
@@ -517,8 +674,49 @@ impl<P: ModelProvider, T: ToolHost> Agent<P, T> {
             turns.push(Turn::new(Role::User, results));
         }
 
+        finish(&mut journal, self.max_turns, &totals);
         Err(RunError::TurnLimit { limit: self.max_turns, journal: Box::new(journal) })
     }
+}
+
+/// Record a warning in both places it belongs: the journal, which is the whole record, and the
+/// caller's summary list.
+///
+/// One function rather than two statements because the two used to drift — cache-plan warnings were
+/// journalled and the other five kinds were not, so a run's event stream showed a subset of what its
+/// `warnings` field showed, and the subset was not the interesting one.
+fn warn(journal: &mut Journal, warnings: &mut Vec<Warning>, turn: u32, warning: Warning) {
+    journal.record_event(Event::root(SeqId(turn), EventKind::Warned { warning: warning.clone() }));
+    warnings.push(warning);
+}
+
+/// Close the event stream.
+///
+/// **Every exit from `run` calls this**, including the three that return `Err`. A consumer watching
+/// events needs "this run is over" to mean the run is over; a stream that ends without
+/// [`EventKind::RunFinished`] on the failure paths makes the absence of the event ambiguous between
+/// *still running* and *died*, which is exactly the distinction an unattended night needs.
+fn finish(journal: &mut Journal, turn: u32, totals: &UsageTotals) {
+    journal.record_event(Event::root(
+        SeqId(turn),
+        EventKind::RunFinished { totals: totals.clone(), cost: reported_cost(totals) },
+    ));
+}
+
+/// What the run cost, when the provider said so.
+///
+/// `None` is not zero. Only OpenRouter reports a figure today, and inventing one from a local price
+/// table would make the ledger look complete while being wrong in the direction nobody checks.
+fn reported_cost(totals: &UsageTotals) -> Option<CostEstimate> {
+    totals
+        .reported_cost
+        .map(|amount| CostEstimate { amount, source: frey_core::usage::PricingSource::Reported })
+}
+
+/// Keep the first occurrence of each distinct warning, in the order it first appeared.
+fn dedup_keeping_first(warnings: &mut Vec<Warning>) {
+    let mut seen = std::collections::HashSet::new();
+    warnings.retain(|warning| seen.insert(warning.clone()));
 }
 
 /// Render a tool outcome for the model, keeping the truncation count so it is never silent.
@@ -664,11 +862,18 @@ mod tests {
     struct Tools {
         definitions: Vec<ToolDefinition>,
         reply: String,
+        listing_fails: bool,
     }
 
     impl ToolHost for Tools {
-        fn definitions(&self) -> Vec<ToolDefinition> {
-            self.definitions.clone()
+        async fn definitions(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            if self.listing_fails {
+                return Err(ToolError::new(
+                    ToolErrorKind::Transient,
+                    "the tool server did not answer",
+                ));
+            }
+            Ok(self.definitions.clone())
         }
 
         async fn call(&self, _invocation: Invocation, cx: &ToolCx) -> ToolOutcome<ToolValue> {
@@ -692,6 +897,7 @@ mod tests {
                 })
                 .collect(),
             reply: "tool output".into(),
+            listing_fails: false,
         }
     }
 
@@ -1025,7 +1231,156 @@ mod tests {
         })]);
         let agent = Agent::new(model, tools(&[]), "test-model");
         let err = pollster::block_on(agent.run("go")).unwrap_err();
-        assert!(matches!(err, RunError::Provider(e) if e.is_fatal()));
+        let RunError::Provider { source, .. } = &err else { panic!("{err}") };
+        assert!(source.is_fatal());
+
+        // And it leaves a record. A provider failure on an unattended run used to drop the journal
+        // on the floor, so the one night that most needed explaining was the one with nothing to
+        // read — and the event stream ended with no `RunFinished`, making "died" indistinguishable
+        // from "still running".
+        let journal = err.journal().expect("a mid-run failure carries its record");
+        assert!(
+            journal.events.iter().any(|e| matches!(e.kind, EventKind::RunFinished { .. })),
+            "the stream must be closed on the failure path too"
+        );
+    }
+
+    #[test]
+    fn a_catalog_that_cannot_be_listed_ends_the_run_rather_than_presenting_no_tools() {
+        // The most-reported design defect in this project, hit independently by four callers. Under
+        // the old infallible signature the only thing an implementation could do with a failed
+        // listing was `unwrap_or_default()`, and an empty catalog reaches the model as *you have no
+        // tools*. Models do not stop at that. They explain, at length and with confidence, why the
+        // task could not be done — and on an unattended run that prose is the output.
+        let model = ScriptedModel::new(vec![Scripted::text("unreachable")]);
+        let host = Tools { listing_fails: true, ..tools(&["fs_read"]) };
+        let err = pollster::block_on(Agent::new(model, host, "test-model").run("go")).unwrap_err();
+
+        let RunError::ToolCatalog { source, .. } = &err else { panic!("{err}") };
+        assert_eq!(source.kind(), ToolErrorKind::Transient);
+        assert!(
+            err.journal()
+                .expect("even this failure keeps its record")
+                .events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::RunFinished { .. })),
+            "the stream is closed even when the run never really started"
+        );
+    }
+
+    #[test]
+    fn an_empty_catalog_is_reported_even_when_the_host_calls_it_success() {
+        // Frey cannot stop a caller swallowing its own error. It can refuse to be quiet about the
+        // result, which is the same shape and the same cost.
+        let model = ScriptedModel::new(vec![Scripted::text("I have no tools")]);
+        let run =
+            pollster::block_on(Agent::new(model, tools(&[]), "test-model").run("go")).unwrap();
+        assert!(
+            run.warnings.iter().any(|w| matches!(
+                w,
+                Warning::Degraded { capability, .. } if capability == "tool-catalog"
+            )),
+            "{:?}",
+            run.warnings
+        );
+    }
+
+    #[test]
+    fn a_router_substituting_the_model_mid_run_is_reported() {
+        // `Warning::RouteChanged` was declared, documented, given a `Display` arm — and never once
+        // constructed. It survived an audit whose own method was finding exactly that, because the
+        // sweep was run over two enums and not over this one.
+        //
+        // The failure it names is not hypothetical on a router: the price, the tokenizer and the
+        // warm prefix all change, and the response is an ordinary 200.
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("fs_read")]),
+            Scripted::text("done").served_by("some-other-model"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let run = pollster::block_on(agent.run("go")).unwrap();
+
+        let route = run
+            .warnings
+            .iter()
+            .find(|w| matches!(w, Warning::RouteChanged { .. }))
+            .expect("a substituted model must be reported");
+        let Warning::RouteChanged { from, to } = route else { unreachable!() };
+        assert!(from.ends_with("test-model"), "{from}");
+        assert!(to.ends_with("some-other-model"), "{to}");
+    }
+
+    #[test]
+    fn a_stable_route_is_not_reported() {
+        let model = ScriptedModel::new(vec![
+            Scripted::tool_calls(vec![tool_call("fs_read")]),
+            Scripted::text("ok"),
+        ]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model");
+        let run = pollster::block_on(agent.run("go")).unwrap();
+        assert!(!run.warnings.iter().any(|w| matches!(w, Warning::RouteChanged { .. })));
+    }
+
+    #[test]
+    fn a_repeated_warning_is_summarised_once_however_it_interleaves() {
+        // `dedup` removes only *consecutive* duplicates, and the loop appends from two sites per
+        // turn, so an A,B,A,B stream survived whole while the comment above it claimed each
+        // distinct warning appeared once.
+        let mut warnings = vec![
+            Warning::BelowMinPrefix { have: 1, need: 2 },
+            Warning::Degraded { capability: "x".into(), fallback: "y".into() },
+            Warning::BelowMinPrefix { have: 1, need: 2 },
+            Warning::Degraded { capability: "x".into(), fallback: "y".into() },
+        ];
+        dedup_keeping_first(&mut warnings);
+        assert_eq!(warnings.len(), 2);
+        assert!(matches!(warnings[0], Warning::BelowMinPrefix { .. }), "first-seen order is kept");
+    }
+
+    #[test]
+    fn every_warning_reaches_the_journal_not_just_the_cache_planners() {
+        // The event stream and the `warnings` field used to disagree: only cache-plan warnings were
+        // journalled, so a consumer watching events saw a strict subset of what a caller reading
+        // the return value saw — and the subset excluded the tool-call runaway.
+        let calls: Vec<Item> = (0..40).map(|_| tool_call("fs_read")).collect();
+        let model = ScriptedModel::new(vec![Scripted::tool_calls(calls), Scripted::text("done")]);
+        let agent = Agent::new(model, tools(&["fs_read"]), "test-model").max_tool_calls_per_turn(4);
+        let run = pollster::block_on(agent.run("go")).unwrap();
+
+        assert!(run.warnings.iter().any(|w| matches!(w, Warning::ToolCallsCapped { .. })));
+        assert!(
+            run.journal.events.iter().any(|e| matches!(
+                &e.kind,
+                EventKind::Warned { warning: Warning::ToolCallsCapped { .. } }
+            )),
+            "a warning a caller can read must also be one a watcher can see"
+        );
+    }
+
+    #[test]
+    fn a_finished_run_reports_what_it_cost_in_the_event_as_well_as_the_return_value() {
+        // `RunFinished { cost: None }` was hardcoded while the identical expression sat two lines
+        // below it, populating `RunOutput::cost`. Anything consuming the event stream rather than
+        // the return value — which is every unattended consumer — saw every run as free.
+        let usage = frey_core::usage::Usage {
+            reported_cost: Some(frey_core::usage::Money::usd(0.001_234)),
+            ..frey_core::usage::Usage::default()
+        };
+        let model = ScriptedModel::new(vec![Scripted::text("done").with_usage(usage)]);
+        let run =
+            pollster::block_on(Agent::new(model, tools(&[]), "test-model").run("go")).unwrap();
+
+        let finished = run
+            .journal
+            .events
+            .iter()
+            .find_map(|e| match &e.kind {
+                EventKind::RunFinished { cost, .. } => Some(*cost),
+                _ => None,
+            })
+            .expect("a finished run says so");
+        assert_eq!(finished.map(|c| c.amount), run.cost.map(|c| c.amount));
+        assert!(finished.is_some(), "the provider reported a figure; the event must carry it");
     }
 
     #[test]

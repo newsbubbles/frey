@@ -15,8 +15,8 @@ use frey_testkit::scripted::{ScriptedModel, Turn as Scripted};
 struct Workspace;
 
 impl ToolHost for Workspace {
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition::new(
+    async fn definitions(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+        Ok(vec![ToolDefinition::new(
             "fs_read",
             "Read a file from the workspace and return its contents as text",
             JsonSchema::new(serde_json::json!({
@@ -27,7 +27,7 @@ impl ToolHost for Workspace {
                 "required": ["path"]
             }))
             .unwrap(),
-        )]
+        )])
     }
 
     async fn call(

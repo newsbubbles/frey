@@ -24,6 +24,7 @@
 pub mod agent_cli;
 pub mod anthropic;
 pub mod dialect;
+pub mod marks;
 pub mod openai;
 pub mod openrouter;
 pub mod sse;
@@ -62,6 +63,7 @@ pub fn dialect_from_config(
 pub mod prelude {
     pub use crate::anthropic::Anthropic;
     pub use crate::dialect::{Auth, Dialect, DialectKind, ProviderConfig};
+    pub use crate::marks::{MarkSupport, survey as mark_survey};
     pub use crate::openai::OpenAiResponses;
     pub use crate::openrouter::{OpenAiChat, OpenRouter};
     #[cfg(feature = "http")]

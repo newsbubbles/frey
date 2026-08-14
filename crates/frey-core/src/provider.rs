@@ -27,7 +27,7 @@ use smol_str::SmolStr;
 use crate::ids::{AgentId, CallId, ModelId, ProviderId, ToolName};
 use crate::item::{Item, Turn};
 use crate::provider_caps::ProviderCapabilities;
-use crate::segment::CacheMark;
+use crate::segment::{CacheMark, CacheTtl};
 use crate::tool_def::ToolDefinition;
 use crate::usage::Usage;
 
@@ -68,6 +68,63 @@ pub struct Request {
     pub cache_key: Option<SmolStr>,
     /// Provider-specific passthrough.
     pub extra: BTreeMap<SmolStr, serde_json::Value>,
+}
+
+/// Where a cache plan's marks land on the wire.
+///
+/// A [`CacheMark`] names a [`SegmentId`], and a dialect has no segment list — it has tools and
+/// turns. This resolves one into the other, in **one place**, because the mapping is a contract
+/// between the agent loop and every adapter and three copies of it would drift.
+///
+/// The contract: the tool block, when there is one, is segment 0; each turn is the segment after
+/// it, in order. A mark naming a segment that does not exist is dropped rather than guessed at.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkPlacement {
+    /// A breakpoint at the end of the tool block.
+    pub tools: Option<CacheTtl>,
+    /// Breakpoints at the end of a turn, by index into `Request::turns`.
+    pub turns: BTreeMap<usize, CacheTtl>,
+}
+
+impl MarkPlacement {
+    /// How many marks actually landed somewhere.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        usize::from(self.tools.is_some()) + self.turns.len()
+    }
+
+    /// Whether nothing landed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Request {
+    /// Resolve this request's marks against its own tools and turns.
+    ///
+    /// Every dialect that realises breakpoints calls this rather than reading `marks` directly. It
+    /// exists because the Anthropic adapter used to take `marks.last()` and put it on the last
+    /// system block — collapsing a four-breakpoint Opus plan to one, dropping it entirely when the
+    /// system prompt was empty, and never marking the tool block at all despite a doc comment three
+    /// lines above saying that it did.
+    #[must_use]
+    pub fn mark_placement(&self) -> MarkPlacement {
+        let has_tools = !self.tools.is_empty();
+        let offset = usize::from(has_tools);
+        let mut placement = MarkPlacement::default();
+        for mark in &self.marks {
+            let index = mark.at.index() as usize;
+            if has_tools && index == 0 {
+                placement.tools = Some(mark.ttl);
+            } else if let Some(turn) = index.checked_sub(offset)
+                && turn < self.turns.len()
+            {
+                placement.turns.insert(turn, mark.ttl);
+            }
+        }
+        placement
+    }
 }
 
 impl Default for ModelId {

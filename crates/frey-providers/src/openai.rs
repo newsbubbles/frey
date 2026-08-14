@@ -40,7 +40,17 @@ impl Dialect for OpenAiResponses {
         ProviderCapabilities {
             tool_search: ToolSearchSupport::Native { max_results: 5, max_deferred: 10_000 },
             programmatic_tool_calling: false,
-            cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: true },
+            // **`explicit_available: false`, and it used to say `true`.** The Responses API has no
+            // breakpoint mechanism: caching is automatic above 1,024 tokens and the only cache
+            // control on the request is `prompt_cache_key`, which is routing affinity rather than a
+            // breakpoint. Declaring an explicit mode gave the planner a budget of one, so it placed
+            // a mark on every request and this adapter dropped every one of them — silently, since
+            // the plan still reported it as placed.
+            //
+            // Found by `marks::survey`, which encodes a request and counts what comes out, the
+            // afternoon that check was written. It is the same defect as the Anthropic `.last()` bug
+            // approached from the capability side rather than the encoder side.
+            cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false },
             reasoning: ReasoningSupport::Encrypted,
             // Responses attempts strict mode and falls back silently when a schema will not
             // compile, so "strict" is not a guarantee the client may rely on.

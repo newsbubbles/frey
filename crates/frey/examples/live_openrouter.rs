@@ -27,8 +27,8 @@ const EXPECTED_TOTAL: i64 = 1101;
 struct Field;
 
 impl ToolHost for Field {
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![
+    async fn definitions(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+        Ok(vec![
             ToolDefinition::new(
                 "station_list",
                 "List the names of every field station reporting readings.",
@@ -69,7 +69,7 @@ impl ToolHost for Field {
                 }))
                 .unwrap(),
             ),
-        ]
+        ])
     }
 
     async fn call(&self, invocation: Invocation, _cx: &ToolCx) -> ToolOutcome<ToolValue> {

@@ -129,24 +129,31 @@ impl CachePlanner {
 
         let automatic = matches!(caps.cache, CacheSupport::Automatic { .. });
         let budget = caps.cache.breakpoint_budget();
-        if budget == 0 {
-            if !segments.is_empty() && matches!(caps.cache, CacheSupport::None) {
+
+        // 0. A provider that caches nothing. Churn costs nothing here — every turn pays full price
+        //    whatever the prompt does — so this is the one shape where the diagnostics below are
+        //    noise, and it returns before them.
+        if matches!(caps.cache, CacheSupport::None) {
+            if !segments.is_empty() {
                 warnings.push(Warning::Degraded {
                     capability: "prompt-cache".into(),
                     fallback: "this provider does not cache prompts; every turn pays full price"
                         .into(),
                 });
             }
-            return CachePlan {
-                warnings,
-                provider_caches_automatically: automatic,
-                ..CachePlan::empty()
-            };
+            return CachePlan { warnings, ..CachePlan::empty() };
         }
 
         // 1. Churn. A segment that claims to be stable but changed is the expensive case: a
         //    breakpoint after it would rewrite the whole prefix every turn. Warn, and treat it as
         //    volatile for the rest of this plan.
+        //
+        //    This runs before the breakpoint budget is consulted, deliberately. Churn is a property
+        //    of the *prompt*, not of who places the breakpoints: on a provider that caches
+        //    automatically the rewritten prefix is just as expensive, and there is not even a
+        //    breakpoint to move out of the way. An earlier version returned above this loop
+        //    whenever the budget was zero, which made this warning — the headline one, the one the
+        //    README opens with — structurally unreachable on every automatic-caching provider.
         let mut effective: Vec<(&Segment, Stability)> = Vec::with_capacity(segments.len());
         for segment in segments {
             let churned = segment.stability.is_cacheable() && previous.changed(segment);
@@ -159,6 +166,31 @@ impl CachePlanner {
             }
             let stability = if churned { Stability::Volatile } else { segment.stability };
             effective.push((segment, stability));
+        }
+
+        // 1b. The provider caches on its own and accepts no marks. There is no breakpoint to place,
+        //     but the prefix can still be too short to be cached at all — silently, as ever. What
+        //     matters here is the *leading* stable run, because automatic caching matches the
+        //     longest common prefix: a stable segment sitting after a volatile one is not part of
+        //     any prefix the provider can reuse.
+        if budget == 0 {
+            let leading = leading_stable_tokens(&effective);
+            let min_prefix = caps.cache.min_prefix_tokens().unwrap_or(0);
+            if !segments.is_empty() {
+                if leading == 0 {
+                    warnings.push(Warning::Degraded {
+                        capability: "prompt-cache".into(),
+                        fallback: "no segment was stable enough to cache behind".into(),
+                    });
+                } else if leading < min_prefix {
+                    warnings.push(Warning::BelowMinPrefix { have: leading, need: min_prefix });
+                }
+            }
+            return CachePlan {
+                warnings,
+                provider_caches_automatically: automatic,
+                ..CachePlan::empty()
+            };
         }
 
         // 2. Candidates: the last stable segment of each stable run, in prompt order. A breakpoint
@@ -323,6 +355,21 @@ fn stable_run_ends(effective: &[(&Segment, Stability)]) -> Vec<SegmentId> {
     ends
 }
 
+/// Tokens in the leading cacheable run — the longest prefix an automatic cache could reuse.
+///
+/// Stops at the first segment that is not cacheable, which is the whole point: a provider matching
+/// the longest common prefix cannot skip over a churning segment to reach a stable one behind it.
+fn leading_stable_tokens(effective: &[(&Segment, Stability)]) -> u32 {
+    let mut total = 0u32;
+    for (segment, stability) in effective {
+        if !stability.is_cacheable() {
+            break;
+        }
+        total = total.saturating_add(segment.est_tokens);
+    }
+    total
+}
+
 /// Tokens covered by the prompt up to and including each segment, keyed by segment index.
 fn cumulative_tokens(segments: &[Segment]) -> BTreeMap<u32, u32> {
     let mut out = BTreeMap::new();
@@ -465,8 +512,19 @@ mod tests {
             segments.push(seg(i * 2, SegmentKind::History, Stability::Static, 2_000, "stable"));
             segments.push(seg(i * 2 + 1, SegmentKind::History, Stability::Volatile, 50, "churn"));
         }
-        let plan = CachePlanner::plan(&segments, &PreviousPrompt::none(), &profiles::openai());
-        assert_eq!(plan.marks.len(), 1, "one breakpoint on automatic-caching providers");
+        // A one-breakpoint provider, built here rather than borrowed from `profiles`: no shipped
+        // profile has this budget any more, and a test that silently starts exercising a budget of
+        // four is a test that stopped testing pruning.
+        let one_breakpoint = ProviderCapabilities {
+            cache: CacheSupport::Explicit {
+                max_breakpoints: 1,
+                ttls: vec![CacheTtl::Short],
+                min_prefix_tokens: 1_024,
+            },
+            ..profiles::opus5()
+        };
+        let plan = CachePlanner::plan(&segments, &PreviousPrompt::none(), &one_breakpoint);
+        assert_eq!(plan.marks.len(), 1, "the budget is one and the plan wanted four");
         assert_eq!(plan.marks[0].at, SegmentId(6), "the one covering the most tokens");
         assert!(plan.warnings.iter().any(|w| matches!(w, Warning::Degraded { .. })));
     }
@@ -539,6 +597,97 @@ mod tests {
         let Warning::LookbackExceeded { blocks, limit } = warning else { panic!("wrong warning") };
         assert_eq!(blocks, 31);
         assert_eq!(limit, 20);
+    }
+
+    #[test]
+    fn churn_is_reported_on_a_provider_that_caches_automatically() {
+        // The regression this test exists for: OpenRouter declares
+        // `Automatic { explicit_available: false }`, whose breakpoint budget is zero, and the
+        // planner used to return before churn detection whenever the budget was zero. Every
+        // OpenRouter session ever run therefore had `CacheChurn` structurally unreachable — on the
+        // one dialect this project's only real caller uses.
+        //
+        // Churn does not need a breakpoint budget. The prefix is rewritten and paid for either way.
+        let turn1 = typical();
+        let previous = PreviousPrompt::from_segments(&turn1);
+
+        let mut turn2 = typical();
+        turn2[1].hash = hash_text("you are a careful assistant. The time is 14:32:06.");
+
+        let plan = CachePlanner::plan(&turn2, &previous, &profiles::openrouter_automatic());
+
+        assert_eq!(plan.marks, vec![], "there is still nothing to place");
+        assert!(plan.provider_caches_automatically);
+        let Some(Warning::CacheChurn { segment, tokens, .. }) =
+            plan.warnings.iter().find(|w| matches!(w, Warning::CacheChurn { .. })).cloned()
+        else {
+            panic!("churn must be reported without a breakpoint budget: {:?}", plan.warnings)
+        };
+        assert_eq!(segment.as_str(), "System:1");
+        assert_eq!(tokens, 800);
+    }
+
+    #[test]
+    fn a_prefix_below_an_automatic_providers_threshold_is_reported() {
+        // Automatic caching is not free of the minimum: below the threshold the provider caches
+        // nothing and says nothing, which is the same silent loss as on the explicit path.
+        let small = vec![
+            seg(0, SegmentKind::System, Stability::Static, 300, "short prompt"),
+            seg(1, SegmentKind::History, Stability::Volatile, 100, "hi"),
+        ];
+        let plan =
+            CachePlanner::plan(&small, &PreviousPrompt::none(), &profiles::openrouter_automatic());
+        assert!(
+            plan.warnings.contains(&Warning::BelowMinPrefix { have: 300, need: 1_024 }),
+            "{:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn an_automatic_provider_above_the_threshold_is_quiet() {
+        let plan = CachePlanner::plan(
+            &typical(),
+            &PreviousPrompt::none(),
+            &profiles::openrouter_automatic(),
+        );
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        assert!(plan.is_cached(), "the provider caches it even though Frey placed nothing");
+    }
+
+    #[test]
+    fn a_stable_run_behind_a_volatile_segment_does_not_count_towards_an_automatic_prefix() {
+        // The distinction that makes the automatic path different from the explicit one: a
+        // provider matching the longest common prefix cannot skip a churning segment to reach the
+        // stable content behind it, so 8,000 stable tokens sitting after a clock buy nothing.
+        let segments = vec![
+            seg(0, SegmentKind::System, Stability::Volatile, 50, "the time is 14:32:06"),
+            seg(1, SegmentKind::History, Stability::Static, 8_000, "settled history"),
+        ];
+        let plan = CachePlanner::plan(
+            &segments,
+            &PreviousPrompt::none(),
+            &profiles::openrouter_automatic(),
+        );
+        assert!(
+            plan.warnings.iter().any(|w| matches!(w, Warning::Degraded { .. })),
+            "nothing cacheable leads the prompt: {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn churn_is_not_reported_when_the_provider_caches_nothing() {
+        // The one shape where churn genuinely costs nothing extra. Reporting it would train the
+        // reader to ignore the warning that matters elsewhere.
+        let turn1 = typical();
+        let previous = PreviousPrompt::from_segments(&turn1);
+        let mut turn2 = typical();
+        turn2[1].hash = hash_text("changed");
+
+        let plan = CachePlanner::plan(&turn2, &previous, &profiles::no_cache());
+        assert_eq!(plan.warnings.len(), 1);
+        assert!(matches!(plan.warnings[0], Warning::Degraded { .. }));
     }
 
     #[test]

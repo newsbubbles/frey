@@ -80,10 +80,21 @@ impl Dialect for Anthropic {
     }
 
     fn encode(&self, request: &Request, stream: bool) -> Result<Value, ProviderError> {
+        // Anthropic take `cache_control` on the **last block of the cached prefix**, so realising a
+        // plan means finding the block each mark's segment ends at. `mark_placement` does the
+        // segment-to-wire mapping once, for every dialect; here it only has to be applied.
+        //
+        // What this replaced took `marks.last()` and put it on the last system block, which
+        // collapsed a four-breakpoint Opus plan to one, dropped it entirely when the system prompt
+        // was empty, and never marked the tool block at all — three lines below a doc comment
+        // saying that it did.
+        let placement = request.mark_placement();
+
         let mut system = Vec::new();
         let mut messages = Vec::new();
 
-        for turn in &request.turns {
+        for (index, turn) in request.turns.iter().enumerate() {
+            let ttl = placement.turns.get(&index).copied();
             match turn.role {
                 Role::System => {
                     for item in &turn.items {
@@ -91,29 +102,29 @@ impl Dialect for Anthropic {
                             system.push(json!({"type": "text", "text": t.text}));
                         }
                     }
+                    mark_last(&mut system, ttl);
                 }
                 Role::User | Role::Assistant => {
                     let role = if turn.role == Role::User { "user" } else { "assistant" };
-                    let content: Vec<Value> = turn.items.iter().filter_map(encode_item).collect();
+                    let mut content: Vec<Value> =
+                        turn.items.iter().filter_map(encode_item).collect();
                     if !content.is_empty() {
+                        mark_last(&mut content, ttl);
                         messages.push(json!({"role": role, "content": content}));
                     }
                 }
             }
         }
 
-        let tools: Vec<Value> = request.tools.iter().map(encode_tool).collect();
+        let mut tools: Vec<Value> = request.tools.iter().map(encode_tool).collect();
+        mark_last(&mut tools, placement.tools);
 
-        // Realise the cache plan. Anthropic take `cache_control` on the *last block* of the cached
-        // prefix, so a mark landing in the tool block becomes a marked tool, and one landing later
-        // becomes a marked system block.
         let mut body = json!({
             "model": request.model.as_str(),
             "max_tokens": request.max_output.max(1),
             "messages": messages,
         });
         if !system.is_empty() {
-            apply_cache_marks(&mut system, request);
             body["system"] = Value::Array(system);
         }
         if !tools.is_empty() {
@@ -150,11 +161,15 @@ impl Dialect for Anthropic {
     }
 }
 
-/// Place `cache_control` on the last system block when the plan asks for a breakpoint there.
-fn apply_cache_marks(system: &mut [Value], request: &Request) {
-    let Some(mark) = request.marks.last() else { return };
-    let Some(last) = system.last_mut() else { return };
-    let ttl = match mark.ttl {
+/// Put `cache_control` on the last block of a list, when the plan asks for a breakpoint there.
+///
+/// A no-op when the plan does not, and when the list is empty — a mark on a segment that encoded to
+/// nothing has nowhere to go, and inventing a position for it would move the breakpoint somewhere
+/// the planner never chose.
+fn mark_last(blocks: &mut [Value], ttl: Option<CacheTtl>) {
+    let Some(ttl) = ttl else { return };
+    let Some(last) = blocks.last_mut() else { return };
+    let ttl = match ttl {
         CacheTtl::Short => "5m",
         CacheTtl::Long => "1h",
     };

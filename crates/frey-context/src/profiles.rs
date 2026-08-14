@@ -63,14 +63,19 @@ pub fn sonnet5() -> ProviderCapabilities {
     anthropic_base(1_024, 200_000, 64_000)
 }
 
-/// An OpenAI Responses-API model: caching is automatic above 1,024 tokens, with an explicit mode
-/// available, and reasoning comes back encrypted and must be replayed verbatim.
+/// An OpenAI Responses-API model: caching is automatic above 1,024 tokens, with **no** explicit
+/// mode, and reasoning comes back encrypted and must be replayed verbatim.
+///
+/// This said "with an explicit mode available" and declared one. The Responses API has no
+/// breakpoint mechanism at all — `prompt_cache_key` is routing affinity — so the planner was given
+/// a budget of one, placed a mark on every request, and the adapter dropped it. See
+/// `frey_providers::marks`.
 #[must_use]
 pub fn openai() -> ProviderCapabilities {
     ProviderCapabilities {
         tool_search: ToolSearchSupport::Native { max_results: 5, max_deferred: 10_000 },
         programmatic_tool_calling: false,
-        cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: true },
+        cache: CacheSupport::Automatic { min_prefix_tokens: 1_024, explicit_available: false },
         reasoning: ReasoningSupport::Encrypted,
         // Responses attempts strict mode and falls back silently if a schema will not compile, so
         // the client must still validate.
@@ -152,9 +157,30 @@ mod tests {
     #[test]
     fn automatic_caching_offers_fewer_breakpoints_than_explicit() {
         assert_eq!(opus5().cache.breakpoint_budget(), 4);
-        assert_eq!(openai().cache.breakpoint_budget(), 1);
+        assert_eq!(openrouter_explicit().cache.breakpoint_budget(), 4);
+        // Both automatic providers offer none, and OpenAI is the one that changed: it declared an
+        // explicit mode the Responses API does not have, so the planner placed a breakpoint on every
+        // request that the adapter then dropped. See `frey_providers::marks`.
+        assert_eq!(openai().cache.breakpoint_budget(), 0);
         assert_eq!(openrouter_automatic().cache.breakpoint_budget(), 0);
         assert_eq!(no_cache().cache.breakpoint_budget(), 0);
+    }
+
+    #[test]
+    fn no_profile_declares_a_breakpoint_mode_its_adapter_cannot_realise() {
+        // The generalisation, on the capability side. `frey_providers::marks` holds the other half
+        // by encoding a real request and counting what comes out; this one is here so that adding a
+        // profile with an unbacked explicit mode fails in the crate that defines it.
+        //
+        // The rule: an automatic-caching provider claims an explicit mode only if some dialect
+        // writes `cache_control`. Today exactly one does, and it is `Explicit` rather than
+        // `Automatic`, so no profile of this shape should exist at all.
+        for (name, caps) in all() {
+            assert!(
+                !matches!(caps.cache, CacheSupport::Automatic { explicit_available: true, .. }),
+                "`{name}` claims an explicit breakpoint mode; no adapter realises one on an                  automatic-caching provider"
+            );
+        }
     }
 
     #[test]

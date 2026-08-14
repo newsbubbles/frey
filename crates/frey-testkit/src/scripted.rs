@@ -27,6 +27,11 @@ pub enum Turn {
         stop: StopReason,
         /// What to report as consumed.
         usage: Usage,
+        /// Which model to report as having served it, if not the one that was asked for.
+        ///
+        /// See [`Turn::served_by`]. `None` echoes the request, which is what a direct provider
+        /// does; a router is under no such obligation.
+        served_by: Option<ModelId>,
     },
     /// Fail.
     Fail(ProviderError),
@@ -39,13 +44,14 @@ impl Turn {
             items: vec![Item::text(text)],
             stop: StopReason::EndTurn,
             usage: Usage::default(),
+            served_by: None,
         }
     }
 
     /// A reply that asks for tools to be run.
     #[must_use]
     pub fn tool_calls(items: Vec<Item>) -> Self {
-        Self::Reply { items, stop: StopReason::ToolUse, usage: Usage::default() }
+        Self::Reply { items, stop: StopReason::ToolUse, usage: Usage::default(), served_by: None }
     }
 
     /// A reply cut off at the output cap: real content, `StopReason::MaxTokens`, no end of turn.
@@ -60,6 +66,7 @@ impl Turn {
             items: vec![Item::text(text)],
             stop: StopReason::MaxTokens,
             usage: Usage::default(),
+            served_by: None,
         }
     }
 
@@ -68,6 +75,20 @@ impl Turn {
     pub fn with_usage(mut self, u: Usage) -> Self {
         if let Self::Reply { usage, .. } = &mut self {
             *usage = u;
+        }
+        self
+    }
+
+    /// Report a *different* model as having served the request, the way a router does.
+    ///
+    /// A direct provider echoes back the model you asked for, so a fake that always does the same
+    /// makes substitution untestable — and substitution is the interesting case, because it changes
+    /// the tokenizer, the price, and whether the warm prompt cache still exists, while returning a
+    /// perfectly ordinary `200`. Ignored for failures.
+    #[must_use]
+    pub fn served_by(mut self, model: impl Into<ModelId>) -> Self {
+        if let Self::Reply { served_by, .. } = &mut self {
+            *served_by = Some(model.into());
         }
         self
     }
@@ -168,9 +189,13 @@ impl ScriptedModel {
         *next += 1;
 
         match turn {
-            Turn::Reply { items, stop, usage } => {
-                Ok(Response { items, usage, stop, model, provider: self.inner.id.clone() })
-            }
+            Turn::Reply { items, stop, usage, served_by } => Ok(Response {
+                items,
+                usage,
+                stop,
+                model: served_by.unwrap_or(model),
+                provider: self.inner.id.clone(),
+            }),
             Turn::Fail(e) => Err(e),
         }
     }

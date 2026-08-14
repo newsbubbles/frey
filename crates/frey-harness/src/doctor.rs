@@ -173,6 +173,83 @@ pub fn check_cacheability(prefix_tokens: u32, caps: &ProviderCapabilities) -> Ve
     )]
 }
 
+/// Report what each dialect does with a cache plan.
+///
+/// `support` comes from `frey_providers::marks::survey`, which encodes a real request and counts the
+/// `cache_control` markers that come out — a measurement rather than a table. It lives here as a
+/// `doctor` check because "does my cache plan do anything on this provider" is a question the
+/// README's opening paragraph implicitly answered *yes* to for every provider, and the true answer
+/// is one dialect of three.
+///
+/// Takes `(provider, budget, realised, automatic)` tuples rather than the type itself, so
+/// `frey-harness` need not depend on `frey-providers` — the crate graph has harness above core and
+/// beside providers, and inverting that for a diagnostic would be the wrong trade.
+#[must_use]
+pub fn check_cache_marks(support: &[(&str, u8, usize, bool)]) -> Vec<Finding> {
+    support
+        .iter()
+        .map(|(provider, budget, realised, automatic)| {
+            let check = "context.marks";
+            match (*budget, *realised, *automatic) {
+                // Declared a budget and emitted nothing. The whole reason this check exists.
+                (b, 0, _) if b > 0 => Finding::error(
+                    check,
+                    format!(
+                        "{provider} accepts {b} cache breakpoint(s) and realises none of them; \
+                         every plan for it is discarded between the planner and the wire"
+                    ),
+                    "This is a bug in the adapter, not in your prompt. Until it is fixed, treat \
+                     this provider as uncached.",
+                ),
+                (0, _, true) => Finding::info(
+                    check,
+                    format!(
+                        "{provider} places no breakpoints and caches the prefix itself; the \
+                         planner's churn and minimum-prefix warnings apply, its breakpoints do not"
+                    ),
+                ),
+                (0, _, false) => Finding::warn(
+                    check,
+                    format!(
+                        "{provider} takes no breakpoints and does not cache: every turn pays full \
+                         price"
+                    ),
+                    "Use a caching provider, or accept the cost.",
+                ),
+                (b, n, _) => Finding::info(
+                    check,
+                    format!(
+                        "{provider} allows {b} breakpoint(s) and realises {n} on a real request"
+                    ),
+                ),
+            }
+        })
+        .collect()
+}
+
+/// An adapter that drops the breakpoints it accepts is an error, not a note.
+///
+/// The distinction is the point of the whole check: *no breakpoints* is a fact about a provider and
+/// *breakpoints discarded* is a bug in Frey, and until this existed they produced the same
+/// observable behaviour — an empty plan, a full-price bill, and no diagnostic anywhere.
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_breakpoint_is_an_error_and_an_absent_one_is_not() {
+        let findings = check_cache_marks(&[
+            ("broken", 4, 0, false),
+            ("automatic", 0, 0, true),
+            ("working", 4, 4, false),
+        ]);
+        assert_eq!(findings[0].severity, Severity::Error, "{:?}", findings[0]);
+        assert_eq!(findings[1].severity, Severity::Info);
+        assert_eq!(findings[2].severity, Severity::Info);
+        assert!(findings[0].message.contains("discarded"), "{}", findings[0].message);
+    }
+}
+
 /// Check what confinement is actually available.
 #[must_use]
 pub fn check_sandbox(available: bool, detail: &str) -> Vec<Finding> {

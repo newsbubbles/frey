@@ -22,7 +22,7 @@ use crate::usage::{CostEstimate, Usage, UsageTotals};
 
 /// Something worth telling a warning about. These are the framework's user-visible diagnostics, and
 /// they should read like good compiler errors: what happened, what it costs, what to do.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Warning {
